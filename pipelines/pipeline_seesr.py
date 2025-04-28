@@ -927,6 +927,7 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
         do_classifier_free_guidance = guidance_scale > 1.0
 
         controlnet = self.controlnet._orig_mod if is_compiled_module(self.controlnet) else self.controlnet
+        
         """
         if isinstance(controlnet, MultiControlNetModel) and isinstance(conditioning_scale, float):
             conditioning_scale = [conditioning_scale] * len(controlnet.nets)

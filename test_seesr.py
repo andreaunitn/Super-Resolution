@@ -6,7 +6,6 @@
 import os
 import sys
 sys.path.append(os.getcwd())
-import cv2
 import glob
 import argparse
 import numpy as np
@@ -266,6 +265,3 @@ if __name__ == "__main__":
     parser.add_argument("--save_prompts", action='store_true')
     args = parser.parse_args()
     main(args)
-
-
-

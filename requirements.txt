@@ -8,3 +8,7 @@ loralib
 fairscale
 pydantic==1.10.11
 gradio==3.24.0
+torchvision==0.15.2
+einops==0.8.1
+scipy==1.10.1
+timm==1.0.15
