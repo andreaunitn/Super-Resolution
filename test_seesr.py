@@ -6,6 +6,7 @@
 import os
 import sys
 sys.path.append(os.getcwd())
+
 import glob
 import argparse
 import numpy as np
@@ -36,8 +37,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import transforms
 
-logger = get_logger(__name__, log_level="INFO")
+from metrics.metrics import compute_metrics
 
+logger = get_logger(__name__, log_level="INFO")
 
 tensor_transforms = transforms.Compose([
                 transforms.ToTensor(),
@@ -175,14 +177,14 @@ def main(args, enable_xformers_memory_efficient_attention=True,):
             image_names = sorted(glob.glob(f'{args.image_path}/*.*'))
         else:
             image_names = [args.image_path]
-
+            
         for image_idx, image_name in enumerate(image_names[:]):
             print(f'================== process {image_idx} imgs... ===================')
             validation_image = Image.open(image_name).convert("RGB")
 
             validation_prompt, ram_encoder_hidden_states = get_validation_prompt(args, validation_image, model)
             validation_prompt += args.added_prompt # clean, extremely detailed, best quality, sharp, clean
-            negative_prompt = args.negative_prompt #dirty, messy, low quality, frames, deformed, 
+            negative_prompt = args.negative_prompt # dirty, messy, low quality, frames, deformed, 
             
             if args.save_prompts:
                 txt_save_path = f"{txt_path}/{os.path.basename(image_name).split('.')[0]}.txt"
@@ -246,6 +248,7 @@ if __name__ == "__main__":
     parser.add_argument("--negative_prompt", type=str, default="dotted, noise, blur, lowres, smooth")
     parser.add_argument("--image_path", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument("--gt_dir", type=str, default=None)
     parser.add_argument("--mixed_precision", type=str, default="fp16") # no/fp16/bf16
     parser.add_argument("--guidance_scale", type=float, default=5.5)
     parser.add_argument("--conditioning_scale", type=float, default=1.0)
@@ -264,4 +267,7 @@ if __name__ == "__main__":
     parser.add_argument("--start_point", type=str, choices=['lr', 'noise'], default='lr') # LR Embedding Strategy, choose 'lr latent + 999 steps noise' as diffusion start point. 
     parser.add_argument("--save_prompts", action='store_true')
     args = parser.parse_args()
-    main(args)
+    
+    # main(args)
+
+    compute_metrics(args)
