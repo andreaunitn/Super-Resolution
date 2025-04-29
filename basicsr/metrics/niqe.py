@@ -172,6 +172,7 @@ def calculate_niqe(img, crop_border, input_order='HWC', convert_to='y', **kwargs
     Returns:
         float: NIQE result.
     """
+
     ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
     # we use the official params estimated from the pristine dataset.
     niqe_pris_params = np.load(os.path.join(ROOT_DIR, 'niqe_pris_params.npz'))
