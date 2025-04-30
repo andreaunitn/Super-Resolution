@@ -9,7 +9,6 @@ from basicsr.metrics.metric_util import reorder_image, to_y_channel
 from basicsr.utils.matlab_functions import imresize
 from basicsr.utils.registry import METRIC_REGISTRY
 
-
 def estimate_aggd_param(block):
     """Estimate AGGD (Asymmetric Generalized Gaussian Distribution) parameters.
 
@@ -95,6 +94,7 @@ def niqe(img, mu_pris_param, cov_pris_param, gaussian_window, block_size_h=96, b
         block_size_w (int): Width of the blocks in to which image is divided.
             Default: 96 (the official recommended value).
     """
+
     assert img.ndim == 2, ('Input image must be a gray or Y (of YCbCr) image with shape (h, w).')
     # crop image
     h, w = img.shape
