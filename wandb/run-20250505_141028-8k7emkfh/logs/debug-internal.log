@@ -1,0 +1,15 @@
+{"time":"2025-05-05T14:10:28.585194706+02:00","level":"INFO","msg":"stream: starting","core version":"0.19.10","symlink path":"/home/tomasoni/repos/Super-Resolution/wandb/run-20250505_141028-8k7emkfh/logs/debug-core.log"}
+{"time":"2025-05-05T14:10:29.368181276+02:00","level":"INFO","msg":"created new stream","id":"8k7emkfh"}
+{"time":"2025-05-05T14:10:29.368196904+02:00","level":"INFO","msg":"stream: started","id":"8k7emkfh"}
+{"time":"2025-05-05T14:10:29.368235333+02:00","level":"INFO","msg":"writer: Do: started","stream_id":"8k7emkfh"}
+{"time":"2025-05-05T14:10:29.368250815+02:00","level":"INFO","msg":"sender: started","stream_id":"8k7emkfh"}
+{"time":"2025-05-05T14:10:29.368293107+02:00","level":"INFO","msg":"handler: started","stream_id":"8k7emkfh"}
+{"time":"2025-05-05T14:10:29.750306461+02:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-05-05T14:10:55.239700635+02:00","level":"INFO","msg":"stream: closing","id":"8k7emkfh"}
+{"time":"2025-05-05T14:10:55.239712867+02:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-05-05T14:10:55.239740846+02:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-05-05T14:10:56.347479376+02:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-05-05T14:10:57.033324372+02:00","level":"INFO","msg":"handler: closed","stream_id":"8k7emkfh"}
+{"time":"2025-05-05T14:10:57.033355313+02:00","level":"INFO","msg":"writer: Close: closed","stream_id":"8k7emkfh"}
+{"time":"2025-05-05T14:10:57.033404561+02:00","level":"INFO","msg":"sender: closed","stream_id":"8k7emkfh"}
+{"time":"2025-05-05T14:10:57.033409137+02:00","level":"INFO","msg":"stream: closed","id":"8k7emkfh"}

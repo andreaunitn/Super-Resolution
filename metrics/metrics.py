@@ -5,11 +5,19 @@ from torchvision import transforms
 
 import pyiqa
 import numpy as np
-from PIL import Image        
+from PIL import Image   
 
 from basicsr.metrics.psnr_ssim import calculate_psnr_pt, calculate_ssim_pt
 
+import wandb
+wandb.login()
+
 def compute_metrics(args):
+
+    run = wandb.init(
+        project="thesis",
+        name="metrics",
+    )
 
     sr_dir = os.path.join(args.output_dir, "sample00")
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -37,10 +45,14 @@ def compute_metrics(args):
     clip_values = []
     clip_iqa_metric = pyiqa.create_metric('clipiqa', device=device)
 
+    processed_count = 0
+    image_files = sorted(os.listdir(args.gt_dir))
+    num_images = len(image_files)
+
     print("######################################################################################")
     print("Calculating metrics")
     print("######################################################################################")
-    for image in os.listdir(args.gt_dir):
+    for i, image in enumerate(image_files):
         gt_path = os.path.join(args.gt_dir, image)
         sr_path = os.path.join(sr_dir, image)
 
@@ -65,15 +77,43 @@ def compute_metrics(args):
         musiq_values.append(musiq)
         clip_values.append(clipiqa)
 
+        processed_count += 1
+        print(f"Image {i+1}/{num_images}: {image}")
+
     # pyiqa compute FID by passing directly the gt and sr folders
     fid = fid_iqa_metric(args.gt_dir, sr_dir)
 
-    print(f"PSNR ↑: {np.mean(psnr_values):.2f}")
-    print(f"SSIM ↑: {np.mean(ssim_values):.4f}")
-    print(f"LPIPS ↓: {np.mean(lpips_values):.4f}")
-    print(f"DISTS ↓: {np.mean(dists_values):.4f}")
-    print(f"FID ↓: {np.mean(fid):.2f}")
-    print(f"NIQE ↓: {np.mean(niqe_values):.4f}")
-    print(f"MANIQA ↑: {np.mean(maniqa_values):.4f}")
-    print(f"MUSIQ ↑: {np.mean(musiq_values):.4f}")
-    print(f"CLIPIQA ↑: {np.mean(clip_values):.4f}")
+    avg_psnr = np.mean(psnr_values)
+    avg_ssim = np.mean(ssim_values)
+    avg_lpips = np.mean(lpips_values)
+    avg_dists = np.mean(dists_values)
+    avg_niqe = np.mean(niqe_values)
+    avg_maniqa = np.mean(maniqa_values)
+    avg_musiq = np.mean(musiq_values)
+    avg_clip = np.mean(clip_values)
+
+    print(f"PSNR ↑: {avg_psnr:.2f}")
+    print(f"SSIM ↑: {avg_ssim:.4f}")
+    print(f"LPIPS ↓: {avg_lpips:.4f}")
+    print(f"DISTS ↓: {avg_dists:.4f}")
+    print(f"FID ↓: {fid:.2f}")
+    print(f"NIQE ↓: {avg_niqe:.4f}")
+    print(f"MANIQA ↑: {avg_maniqa:.4f}")
+    print(f"MUSIQ ↑: {avg_musiq:.4f}")
+    print(f"CLIPIQA ↑: {avg_clip:.4f}")
+
+    # log metrics to wandb
+    metrics_to_log = {
+        "PSNR": avg_psnr,
+        "SSIM": avg_ssim,
+        "LPIPS": avg_lpips,
+        "DISTS": avg_dists,
+        "FID": fid,
+        "NIQE": avg_niqe,
+        "MANIQA": avg_maniqa,
+        "MUSIQ": avg_musiq,
+        "CLIPIQA": avg_clip
+    }
+
+    run.log(metrics_to_log)
+    run.finish()

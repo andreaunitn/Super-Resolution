@@ -1,0 +1,16 @@
+{"time":"2025-05-05T14:23:44.065420572+02:00","level":"INFO","msg":"stream: starting","core version":"0.19.10","symlink path":"/home/tomasoni/repos/Super-Resolution/wandb/run-20250505_142344-mqur5kyp/logs/debug-core.log"}
+{"time":"2025-05-05T14:23:44.888288809+02:00","level":"INFO","msg":"created new stream","id":"mqur5kyp"}
+{"time":"2025-05-05T14:23:44.888305219+02:00","level":"INFO","msg":"stream: started","id":"mqur5kyp"}
+{"time":"2025-05-05T14:23:44.888311633+02:00","level":"INFO","msg":"handler: started","stream_id":"mqur5kyp"}
+{"time":"2025-05-05T14:23:44.888333619+02:00","level":"INFO","msg":"sender: started","stream_id":"mqur5kyp"}
+{"time":"2025-05-05T14:23:44.888343639+02:00","level":"INFO","msg":"writer: Do: started","stream_id":"mqur5kyp"}
+{"time":"2025-05-05T14:23:45.239993365+02:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-05-05T14:24:10.94071197+02:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-05-05T14:24:10.940748064+02:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-05-05T14:24:11.942119009+02:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading output.log","runtime_seconds":0.383307065,"progress":"5.2KB/5.2KB"},{"desc":"uploading wandb-summary.json","runtime_seconds":0.383300974,"progress":"356B/356B"},{"desc":"uploading config.yaml","runtime_seconds":0.341966763,"progress":"783B/783B"}],"total_operations":3}}
+{"time":"2025-05-05T14:24:12.974678596+02:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-05-05T14:24:13.715486229+02:00","level":"INFO","msg":"stream: closing","id":"mqur5kyp"}
+{"time":"2025-05-05T14:24:13.715491796+02:00","level":"INFO","msg":"handler: closed","stream_id":"mqur5kyp"}
+{"time":"2025-05-05T14:24:13.715495029+02:00","level":"INFO","msg":"writer: Close: closed","stream_id":"mqur5kyp"}
+{"time":"2025-05-05T14:24:13.715517604+02:00","level":"INFO","msg":"sender: closed","stream_id":"mqur5kyp"}
+{"time":"2025-05-05T14:24:13.715543213+02:00","level":"INFO","msg":"stream: closed","id":"mqur5kyp"}
