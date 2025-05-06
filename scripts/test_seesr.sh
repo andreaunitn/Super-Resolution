@@ -3,11 +3,11 @@ python -W ignore test_seesr.py \
 --prompt None \
 --seesr_model_path preset/models/seesr \
 --ram_ft_path preset/models/DAPE.pth \
---image_path preset/datasets/test_datasets/DRealSR/test_LR \
---gt_dir preset/datasets/test_datasets/DRealSR/test_HR \
---output_dir preset/datasets/output/DRealSR \
+--image_path preset/datasets/test_datasets/RealSR/test_LR \
+--output_dir preset/datasets/output/RealSR \
+--gt_dir preset/datasets/test_datasets/RealSR/test_HR \
+--only_metrics \
 --start_point lr \
 --num_inference_steps 50 \
 --guidance_scale 5.5 \
 --process_size 512
-

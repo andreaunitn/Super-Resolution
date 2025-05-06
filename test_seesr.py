@@ -250,6 +250,7 @@ if __name__ == "__main__":
     parser.add_argument("--image_path", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--gt_dir", type=str, default=None)
+    parser.add_argument("--only_metrics", action="store_true")
     parser.add_argument("--mixed_precision", type=str, default="fp16") # no/fp16/bf16
     parser.add_argument("--guidance_scale", type=float, default=5.5)
     parser.add_argument("--conditioning_scale", type=float, default=1.0)
@@ -268,7 +269,8 @@ if __name__ == "__main__":
     parser.add_argument("--start_point", type=str, choices=['lr', 'noise'], default='lr') # LR Embedding Strategy, choose 'lr latent + 999 steps noise' as diffusion start point. 
     parser.add_argument("--save_prompts", action='store_true')
     args = parser.parse_args()
-    
-    # main(args)
+
+    if not args.only_metrics:
+        main(args)
 
     compute_metrics(args)
