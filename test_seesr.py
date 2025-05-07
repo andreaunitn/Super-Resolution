@@ -247,6 +247,7 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", type=str, default="") # user can add self-prompt to improve the results
     parser.add_argument("--added_prompt", type=str, default="clean, high-resolution, 8k")
     parser.add_argument("--negative_prompt", type=str, default="dotted, noise, blur, lowres, smooth")
+    parser.add_argument("--datasets", nargs="+", type=str, default=["DRealSR", "RealSR"])
     parser.add_argument("--image_path", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--gt_dir", type=str, default=None)

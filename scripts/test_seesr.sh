@@ -3,9 +3,9 @@ python -W ignore test_seesr.py \
 --prompt None \
 --seesr_model_path preset/models/seesr \
 --ram_ft_path preset/models/DAPE.pth \
---image_path preset/datasets/test_datasets/RealSR/test_LR \
---output_dir preset/datasets/output/RealSR \
---gt_dir preset/datasets/test_datasets/RealSR/test_HR \
+--image_path preset/datasets/test_datasets/DIV2K/test_LR \
+--output_dir preset/datasets/output/DIV2K \
+--gt_dir preset/datasets/test_datasets/DIV2K/test_HR \
 --only_metrics \
 --start_point lr \
 --num_inference_steps 50 \
