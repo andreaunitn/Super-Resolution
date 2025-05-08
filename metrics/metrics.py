@@ -23,7 +23,7 @@ def get_metrics(metrics, dataset):
     gt_dir = os.path.join(GT_PREFIX, dataset + "/test_HR")
     
     metrics_to_log = {}
-    metrics_to_log["dataset"] = dataset
+    # metrics_to_log["dataset"] = dataset
 
     for metric in NO_REFERENCE_METRICS:
         metrics_to_log[metric] = np.mean(metrics[metric])
@@ -49,12 +49,10 @@ def compute_metrics(args):
         transforms.ToTensor(),
     ])
 
-    run = wandb.init(
-        project="thesis",
-        name=f"SR_Evaluation_Run_{wandb.util.generate_id()}",
-    )
+    dataset_level_metrics = {}
 
     for dataset in args.datasets:
+
         sr_dir = os.path.join(SR_PREFIX, dataset + "/sample00")
         gt_dir = os.path.join(GT_PREFIX, dataset + "/test_HR")
 
@@ -130,6 +128,20 @@ def compute_metrics(args):
 
         # log metrics for wandb
         metrics_to_log = get_metrics(metrics, dataset)
-        run.log(metrics_to_log)
+        dataset_level_metrics[dataset] = metrics_to_log
 
-    run.finish()
+    with wandb.init(project="thesis", name="metric summary"):
+        for metric in FULL_REFERENCE_METRICS + NO_REFERENCE_METRICS + ["fid"]:
+            table = wandb.Table(columns=["dataset", metric])
+            for dataset, metric_dict in dataset_level_metrics.items():
+                if metric in metric_dict:
+                    table.add_data(dataset, metric_dict[metric])
+
+            wandb.log({f"{metric}_bar_chart": wandb.plot.bar(
+                table,
+                "dataset",
+                metric,
+                "dataset",
+            )})
+
+    wandb.finish()
