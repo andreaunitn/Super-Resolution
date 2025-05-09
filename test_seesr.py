@@ -247,11 +247,12 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", type=str, default="") # user can add self-prompt to improve the results
     parser.add_argument("--added_prompt", type=str, default="clean, high-resolution, 8k")
     parser.add_argument("--negative_prompt", type=str, default="dotted, noise, blur, lowres, smooth")
-    parser.add_argument("--datasets", nargs="+", type=str, default=["DRealSR", "RealSR"])
+    parser.add_argument("--datasets", nargs="+", type=str, default=["DRealSR", "RealSR", "RealLR200", "DIV2K"])
     parser.add_argument("--image_path", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--gt_dir", type=str, default=None)
     parser.add_argument("--only_metrics", action="store_true")
+    parser.add_argument("--recompute_metrics", action="store_true")
     parser.add_argument("--mixed_precision", type=str, default="fp16") # no/fp16/bf16
     parser.add_argument("--guidance_scale", type=float, default=5.5)
     parser.add_argument("--conditioning_scale", type=float, default=1.0)
