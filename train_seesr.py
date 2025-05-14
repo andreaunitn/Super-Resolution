@@ -556,9 +556,6 @@ def parse_args(input_args=None):
     parser.add_argument("--ram_ft_path", type=str, default=None)
     parser.add_argument('--trainable_modules', nargs='*', type=str, default=["image_attentions"])
 
-    
-    
-
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:
@@ -757,7 +754,7 @@ for name, module in unet.named_modules():
 
 ## init the RAM or DAPE model
 from ram.models.ram_lora import ram
-from ram import get_transform
+
 if args.ram_ft_path is None:
     print("======== USE Original RAM ========")
 else:
@@ -766,9 +763,10 @@ else:
     print("==============")
 
 RAM = ram(pretrained='preset/models/ram_swin_large_14m.pth',
-            pretrained_condition=args.ram_ft_path, 
-            image_size=384,
-            vit='swin_l')
+          pretrained_condition=args.ram_ft_path, 
+          image_size=384,
+          vit='swin_l')
+
 RAM.eval()
 
 if args.enable_xformers_memory_efficient_attention:
@@ -964,7 +962,6 @@ progress_bar = tqdm(
     disable=not accelerator.is_local_main_process,
 )
 
-
 for epoch in range(first_epoch, args.num_train_epochs):
     for step, batch in enumerate(train_dataloader):
         # with accelerator.accumulate(controlnet):
@@ -985,7 +982,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            # # Get the text embedding for conditioning
+            # Get the text embedding for conditioning
             encoder_hidden_states = text_encoder(batch["input_ids"].to(accelerator.device))[0]
 
             controlnet_image = batch["conditioning_pixel_values"].to(accelerator.device, dtype=weight_dtype)
@@ -994,6 +991,12 @@ for epoch in range(first_epoch, args.num_train_epochs):
             with torch.no_grad():
                 ram_image = batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
                 ram_encoder_hidden_states = RAM.generate_image_embeds(ram_image)
+
+                import florence2.florence2 as florence
+
+                florence_encoder_hidden_states, bbox = florence.extract_embeds_and_bboxes(pixel_values)
+
+            exit(0)
 
             down_block_res_samples, mid_block_res_sample = controlnet(
                 noisy_latents,
@@ -1067,7 +1070,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
         if global_step >= args.max_train_steps:
             break
 
-# Create the pipeline using using the trained modules and save it.
+# Create the pipeline using the trained modules and save it.
 accelerator.wait_for_everyone()
 if accelerator.is_main_process:
     controlnet = accelerator.unwrap_model(controlnet)

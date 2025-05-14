@@ -192,7 +192,7 @@ class RAMLora(nn.Module):
         image_atts = torch.ones(image_embeds.size()[:-1],
                                 dtype=torch.long).to(image.device)
 
-        # recognized image tags using image-tag recogntiion decoder
+        # recognized image tags using image-tag recognition decoder
         image_cls_embeds = image_embeds[:, 0, :]
         image_spatial_embeds = image_embeds[:, 1:, :]
 
@@ -225,10 +225,7 @@ class RAMLora(nn.Module):
             # tag_output_chinese.append(' | '.join(token_chinese))
             tag_output_chinese.append(', '.join(token_chinese))
 
-
         return tag_output, tag_output_chinese
-
-    
 
     def condition_forward(self,
                  image,

@@ -1,7 +1,7 @@
 '''
  * SeeSR: Towards Semantics-Aware Real-World Image Super-Resolution 
- * Modified from diffusers by Rongyuan Wu
- * 24/12/2023
+ * Modified from  Rongyuan Wu by Andrea Tomasoni
+ * 14/05/2025
 '''
 
 import os
@@ -10,27 +10,22 @@ sys.path.append(os.getcwd())
 
 import glob
 import argparse
-import numpy as np
 from PIL import Image
 
 import torch
-import torch.utils.checkpoint
 
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from diffusers import AutoencoderKL, DDPMScheduler
-from diffusers.utils import check_min_version
 from diffusers.utils.import_utils import is_xformers_available
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPImageProcessor
 
 from pipelines.pipeline_seesr import StableDiffusionControlNetPipeline
-from utils.misc import load_dreambooth_lora
 from utils.wavelet_color_fix import wavelet_color_fix, adain_color_fix
 
 from ram.models.ram_lora import ram
 from ram import inference_ram as inference
-from ram import get_transform
 
 from typing import Mapping, Any
 from torchvision import transforms
@@ -50,6 +45,7 @@ ram_transforms = transforms.Compose([
             transforms.Resize((384, 384)),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
+
 def load_state_dict_diffbirSwinIR(model: nn.Module, state_dict: Mapping[str, Any], strict: bool=False) -> None:
     state_dict = state_dict.get("state_dict", state_dict)
     
@@ -123,7 +119,7 @@ def load_seesr_pipeline(args, accelerator, enable_xformers_memory_efficient_atte
     return validation_pipeline
 
 def load_tag_model(args, device='cuda'):
-    
+
     model = ram(pretrained='preset/models/ram_swin_large_14m.pth',
                 pretrained_condition=args.ram_ft_path,
                 image_size=384,
@@ -185,13 +181,14 @@ def main(args, enable_xformers_memory_efficient_attention=True,):
 
             validation_prompt, ram_encoder_hidden_states = get_validation_prompt(args, validation_image, model)
             validation_prompt += args.added_prompt # clean, extremely detailed, best quality, sharp, clean
-            negative_prompt = args.negative_prompt # dirty, messy, low quality, frames, deformed, 
+            negative_prompt = args.negative_prompt # dirty, messy, low quality, frames, deformed,
             
             if args.save_prompts:
                 txt_save_path = f"{txt_path}/{os.path.basename(image_name).split('.')[0]}.txt"
                 file = open(txt_save_path, "w")
                 file.write(validation_prompt)
                 file.close()
+            
             print(f'{validation_prompt}')
 
             ori_width, ori_height = validation_image.size
