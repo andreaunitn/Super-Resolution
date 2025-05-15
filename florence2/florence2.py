@@ -42,12 +42,10 @@ def load_florence2():
 
     return florence, processor
 
-def extract_embeds_and_bboxes(pixel_values):
+def extract_embeds_and_bboxes(model, processor, pixel_values):
 
-    florence2, processor = load_florence2()
-
-    task_prompt = "<CAPTION>"
+    task_prompt = "<OD>"
     image = preproc(pixel_values)
-    bboxes, embeds = eval_image(florence2, processor, task_prompt, image)
+    bboxes, embeds = eval_image(model, processor, task_prompt, image)
 
     return bboxes, embeds

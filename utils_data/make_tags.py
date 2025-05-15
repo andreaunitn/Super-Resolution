@@ -3,6 +3,7 @@
  * Modified from diffusers by Rongyuan Wu
  * 24/12/2023
 '''
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -53,9 +54,10 @@ os.makedirs(tag_path, exist_ok=True)
 lq_lists = glob.glob(os.path.join(gt_path, '*.png'))
 print(f'There are {len(lq_lists)} imgs' )
 
-model = ram(pretrained='preset/models/ram_swin_large_14m.pth',   
-                            image_size=384,
-                            vit='swin_l')
+model = ram(pretrained='preset/models/ram_swin_large_14m.pth',
+            image_size=384,
+            vit='swin_l')
+
 model = model.eval()
 model = model.to('cuda')
 
@@ -71,21 +73,8 @@ with torch.no_grad():
         lq = ram_transforms(Image.open(lq_path)).unsqueeze(0).to('cuda')
         gt_captions = inference(lq, model)
         gt_prompt = f"{gt_captions[0]},"
-        tag_save_path = tag_path + f'{basename}.txt'
+        tag_save_path = tag_path + f'/{basename}.txt'
         f = open(f"{tag_save_path}", "w")
         f.write(gt_prompt)
         f.close()
         print(f'The GT tag of {basename}.txt: {gt_prompt}')
-
-
-
-
-
-
-
-
-
-
-
-
-        

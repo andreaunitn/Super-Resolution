@@ -38,7 +38,6 @@ class PairedCaptionDataset(data.Dataset):
             self.gt_list += glob.glob(os.path.join(gt_path, '*.png'))
             self.tag_path_list += glob.glob(os.path.join(tag_path, '*.txt'))
 
-
         assert len(self.lr_list) == len(self.gt_list)
         assert len(self.lr_list) == len(self.tag_path_list)
 

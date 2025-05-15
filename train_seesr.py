@@ -555,6 +555,7 @@ def parse_args(input_args=None):
     parser.add_argument("--null_text_ratio", type=float, default=0.5)
     parser.add_argument("--ram_ft_path", type=str, default=None)
     parser.add_argument('--trainable_modules', nargs='*', type=str, default=["image_attentions"])
+    parser.add_argument("--seesr_model_path", type=str, default=None)
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -674,9 +675,12 @@ if args.unet_model_name_or_path:
 else:
     # resume from pretrained SD
     logger.info("Loading unet weights from SD")
+    """
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, use_image_cross_attention=True
     )
+    """
+    unet = UNet2DConditionModel.from_pretrained(args.seesr_model_path, subfolder="unet")
     print(f'===== if use ram encoder? {unet.config.use_image_cross_attention}')
 
 if args.controlnet_model_name_or_path:
@@ -769,6 +773,15 @@ RAM = ram(pretrained='preset/models/ram_swin_large_14m.pth',
 
 RAM.eval()
 
+## init Florence 2
+from florence2.florence2 import load_florence2, extract_embeds_and_bboxes
+
+print("==============")
+print("USE Florence")
+print("==============")
+
+florence, processor = load_florence2()
+
 if args.enable_xformers_memory_efficient_attention:
     if is_xformers_available():
         import xformers
@@ -827,9 +840,8 @@ else:
     optimizer_class = torch.optim.AdamW
 
 # Optimizer creation
-print(f'=================Optimize ControlNet and Unet ======================')
+print(f'================= Optimize ControlNet and Unet ======================')
 params_to_optimize = list(controlnet.parameters()) + list(unet.parameters())
-
 
 print(f'start to load optimizer...')
 
@@ -990,13 +1002,21 @@ for epoch in range(first_epoch, args.num_train_epochs):
             # extract soft semantic label
             with torch.no_grad():
                 ram_image = batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
+                print(ram_image.shape, batch["pixel_values"].shape, batch["ram_values"].shape)
                 ram_encoder_hidden_states = RAM.generate_image_embeds(ram_image)
 
-                import florence2.florence2 as florence
-
-                florence_encoder_hidden_states, bbox = florence.extract_embeds_and_bboxes(pixel_values)
-
-            exit(0)
+                # extract image embeds + bboxes using florence 
+                bbox, florence_encoder_hidden_states = extract_embeds_and_bboxes(florence, processor, pixel_values)
+                
+                print(f"======== Bounding Boxes: ========")
+                print(bbox)
+                print(f"======== Florence 2 embed dims: ========")
+                print(florence_encoder_hidden_states.shape)
+                print(f"======== DAPE embed dims: ========")
+                print(ram_encoder_hidden_states.shape)
+                print("Text encoder embeds")
+                print(encoder_hidden_states.shape)
+                print("=============================================")
 
             down_block_res_samples, mid_block_res_sample = controlnet(
                 noisy_latents,
@@ -1006,6 +1026,13 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 return_dict=False,
                 image_encoder_hidden_states=ram_encoder_hidden_states,
             )
+
+            print(f"{[x.shape for x in down_block_res_samples]=}")
+            print(f"{mid_block_res_sample.shape=}")
+            print(f"{encoder_hidden_states.shape=}")
+            print(f"{ram_encoder_hidden_states.shape=}")
+
+            exit()
 
             # Predict the noise residual
             model_pred = unet(
