@@ -2386,10 +2386,13 @@ class CrossAttnUpBlock2D(nn.Module):
                     )
                 )
 
+        # TCA modules
         self.attentions = nn.ModuleList(attentions)
+
         self.resnets = nn.ModuleList(resnets)
 
         ## for image cross attention
+        # RCA modules
         if self.use_image_cross_attention:
             self.image_attentions = nn.ModuleList(image_attentions)
 
@@ -2433,12 +2436,16 @@ class CrossAttnUpBlock2D(nn.Module):
                         return custom_forward
 
                     ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+
+                    # ResNet
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(resnet),
                         hidden_states,
                         temb,
                         **ckpt_kwargs,
                     )
+
+                    # TCA
                     hidden_states = attn(
                         hidden_states,
                         encoder_hidden_states=encoder_hidden_states,
@@ -2447,7 +2454,9 @@ class CrossAttnUpBlock2D(nn.Module):
                         encoder_attention_mask=encoder_attention_mask,
                         return_dict=False,
                     )[0]
+
                     ## for image cross attention
+                    # RCA
                     hidden_states = image_attn(
                         hidden_states,
                         encoder_hidden_states=image_encoder_hidden_states,
@@ -2456,8 +2465,12 @@ class CrossAttnUpBlock2D(nn.Module):
                         encoder_attention_mask=encoder_attention_mask,
                         return_dict=False,
                     )[0]
+
                 else:
+                    # ResNet
                     hidden_states = resnet(hidden_states, temb)
+
+                    # TCA
                     hidden_states = attn(
                         hidden_states,
                         encoder_hidden_states=encoder_hidden_states,
@@ -2466,7 +2479,9 @@ class CrossAttnUpBlock2D(nn.Module):
                         encoder_attention_mask=encoder_attention_mask,
                         return_dict=False,
                     )[0]
+
                     ## for image cross attention
+                    # RCA
                     hidden_states = image_attn(
                         hidden_states,
                         encoder_hidden_states=image_encoder_hidden_states,
@@ -2494,12 +2509,16 @@ class CrossAttnUpBlock2D(nn.Module):
                         return custom_forward
 
                     ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+
+                    # ResNet
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(resnet),
                         hidden_states,
                         temb,
                         **ckpt_kwargs,
                     )
+
+                    # TCA
                     hidden_states = attn(
                         hidden_states,
                         encoder_hidden_states=encoder_hidden_states,
@@ -2509,7 +2528,11 @@ class CrossAttnUpBlock2D(nn.Module):
                         return_dict=False,
                     )[0]
                 else:
+
+                    # ResNet
                     hidden_states = resnet(hidden_states, temb)
+
+                    # TCA
                     hidden_states = attn(
                         hidden_states,
                         encoder_hidden_states=encoder_hidden_states,

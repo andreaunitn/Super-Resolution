@@ -912,6 +912,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 )
             image_embeds = added_cond_kwargs.get("image_embeds")
             encoder_hidden_states = self.encoder_hid_proj(image_embeds)
+
         # 2. pre-process
         sample = self.conv_in(sample)
 
@@ -922,7 +923,6 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             cross_attention_kwargs["gligen"] = {"objs": self.position_net(**gligen_args)}
 
         # 3. down
-
         is_controlnet = mid_block_additional_residual is not None and down_block_additional_residuals is not None
         is_adapter = mid_block_additional_residual is None and down_block_additional_residuals is not None
 
