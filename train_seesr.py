@@ -974,50 +974,58 @@ progress_bar = tqdm(
     disable=not accelerator.is_local_main_process,
 )
 
+# MAIN TRAINING LOOP
 for epoch in range(first_epoch, args.num_train_epochs):
     for step, batch in enumerate(train_dataloader):
-        # with accelerator.accumulate(controlnet):
         with accelerator.accumulate(controlnet), accelerator.accumulate(unet):
+
+            # Ground truth image (512x512)
             pixel_values = batch["pixel_values"].to(accelerator.device, dtype=weight_dtype)
-            # Convert images to latent space
+
+            # Convert GT image to latent space
             latents = vae.encode(pixel_values).latent_dist.sample()
             latents = latents * vae.config.scaling_factor
 
-            # Sample noise that we'll add to the latents
+            # Sample noise to be added to the latents
             noise = torch.randn_like(latents)
             bsz = latents.shape[0]
+
             # Sample a random timestep for each image
             timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
             timesteps = timesteps.long()
 
-            # Add noise to the latents according to the noise magnitude at each timestep
-            # (this is the forward diffusion process)
+            # Add noise to the latents according to the noise magnitude at each timestep (FORWARD DIFFUSION PROCESS (Z_t in the paper))
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            # Get the text embedding for conditioning
+            # Compute the embeddings for the tags (TEXT EMBEDDING BRANCH)
             encoder_hidden_states = text_encoder(batch["input_ids"].to(accelerator.device))[0]
 
+            # Low resolution image for the controlnet (IMAGE BRANCH) -> I think the image encoder drawn in the paper is actually inside the controlnet
             controlnet_image = batch["conditioning_pixel_values"].to(accelerator.device, dtype=weight_dtype)
 
-            # extract soft semantic label
             with torch.no_grad():
+
+                # Low resolution image that has been bicubic upsampled for the image encoder inside DAPE (384x384)
                 ram_image = batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
-                print(ram_image.shape, batch["pixel_values"].shape, batch["ram_values"].shape)
+
+                # Extract soft semantic label (REPRESENTATION BRANCH)
                 ram_encoder_hidden_states = RAM.generate_image_embeds(ram_image)
-
-                # extract image embeds + bboxes using florence 
-                bbox, florence_encoder_hidden_states = extract_embeds_and_bboxes(florence, processor, pixel_values)
                 
-                print(f"======== Bounding Boxes: ========")
-                print(bbox)
-                print(f"======== Florence 2 embed dims: ========")
-                print(florence_encoder_hidden_states.shape)
-                print(f"======== DAPE embed dims: ========")
-                print(ram_encoder_hidden_states.shape)
-                print("Text encoder embeds")
-                print(encoder_hidden_states.shape)
-                print("=============================================")
-
+                """
+                # Extract image embeds + bboxes using florence 
+                # bbox, florence_encoder_hidden_states = extract_embeds_and_bboxes(florence, processor, pixel_values)
+                
+                # print(f"======== Bounding Boxes: ========")
+                # print(bbox)
+                # print(f"======== Florence 2 embed dims: ========")
+                # print(florence_encoder_hidden_states.shape)
+                # print(f"======== DAPE embed dims: ========")
+                # print(ram_encoder_hidden_states.shape)
+                # print("Text encoder embeds")
+                # print(encoder_hidden_states.shape)
+                # print("=============================================")
+                """
+            # controlnet
             down_block_res_samples, mid_block_res_sample = controlnet(
                 noisy_latents,
                 timesteps,
@@ -1027,14 +1035,14 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 image_encoder_hidden_states=ram_encoder_hidden_states,
             )
 
-            print(f"{[x.shape for x in down_block_res_samples]=}")
-            print(f"{mid_block_res_sample.shape=}")
-            print(f"{encoder_hidden_states.shape=}")
-            print(f"{ram_encoder_hidden_states.shape=}")
+            # print(f"{[x.shape for x in down_block_res_samples]=}")
+            # print(f"{mid_block_res_sample.shape=}")
+            # print(f"{encoder_hidden_states.shape=}")
+            # print(f"{ram_encoder_hidden_states.shape=}")
 
             exit()
 
-            # Predict the noise residual
+            # Predict the noise residual -> unet
             model_pred = unet(
                 noisy_latents,
                 timesteps,
@@ -1060,6 +1068,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 # params_to_clip = controlnet.parameters()
                 params_to_clip = list(controlnet.parameters()) + list(unet.parameters())
                 accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad(set_to_none=args.set_grads_to_none)

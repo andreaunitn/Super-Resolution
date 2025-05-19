@@ -60,7 +60,6 @@ class PairedCaptionDataset(data.Dataset):
 
     def __getitem__(self, index):
 
-       
         gt_path = self.gt_list[index]
         gt_img = Image.open(gt_path).convert('RGB')
         gt_img = self.img_preproc(gt_img)
