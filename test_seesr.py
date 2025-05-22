@@ -1,6 +1,6 @@
 '''
  * SeeSR: Towards Semantics-Aware Real-World Image Super-Resolution 
- * Modified from  Rongyuan Wu by Andrea Tomasoni
+ * Modified from Rongyuan Wu by Andrea Tomasoni
  * 14/05/2025
 '''
 

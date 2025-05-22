@@ -1217,6 +1217,8 @@ class CrossAttnDownBlock2D(nn.Module):
                     # ResNet
                     hidden_states = resnet(hidden_states, temb)
 
+                    # print(f"input shape TCA: {hidden_states.shape=}, tags embds: {encoder_hidden_states.shape=}")
+                    
                     # TCA module
                     hidden_states = attn(
                         hidden_states,
@@ -1226,6 +1228,9 @@ class CrossAttnDownBlock2D(nn.Module):
                         encoder_attention_mask=encoder_attention_mask,
                         return_dict=False,
                     )[0]
+
+                    # print(f"output shape TCA/RCA: {hidden_states.shape=}")
+                    # print(f"img embds: {image_encoder_hidden_states.shape=}")
 
                     ## for image cross attention
                     # RCA module
@@ -1237,6 +1242,8 @@ class CrossAttnDownBlock2D(nn.Module):
                         encoder_attention_mask=encoder_attention_mask,
                         return_dict=False,
                     )[0]
+
+                    # print(f"output shape RCA: {hidden_states.shape=}")
 
                 # apply additional residuals to the output of the last pair of resnet and attention blocks
                 if i == len(blocks) - 1 and additional_residuals is not None:

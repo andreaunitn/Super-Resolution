@@ -10,7 +10,8 @@ IMAGENET_STD = [0.229, 0.224, 0.225]
 
 def preproc(pixel_values):
 
-    tensor = pixel_values[0].cpu()
+    tensor = pixel_values[0]
+    tensor = tensor.squeeze(0)
 
     mean = torch.tensor(IMAGENET_MEAN)[:, None, None]
     std = torch.tensor(IMAGENET_STD)[:, None, None]
@@ -34,7 +35,7 @@ def denormalize_tensor(tensor, mean, std):
     return denormalized
 """
     
-def plot_bbox(image, data):
+def plot_bbox(image, title=None, boxes=None):
     """
     Plots bounding boxes on an image.
 
@@ -44,20 +45,27 @@ def plot_bbox(image, data):
         - 'bboxes': A list of bounding boxes, where each box is a list of [x1, y1, x2, y2].
         - 'labels': A list of labels corresponding to each bounding box.
     """
-    
+
+    # if isinstance(image, torch.Tensor):
+    #     image = image.squeeze(0)
+    #     image = to_pil_image(image)
+
     if image.mode != 'RGB':
         image = image.convert('RGB')
       
     fig, ax = plt.subplots(figsize=(10, 10))
-    ax.imshow(image)  
-      
-    # Plot each bounding box  
-    for bbox, label in zip(data['bboxes'], data['labels']):  
-        x1, y1, x2, y2 = bbox  
-        rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=1, edgecolor='r', facecolor='none')    
-        ax.add_patch(rect)  
-        plt.text(x1, y1, label, color='white', fontsize=8, bbox=dict(facecolor='red', alpha=0.5))  
+    ax.imshow(image)
+    
+    if boxes:
+
+        # Plot each bounding box  
+        for bbox, label in zip(boxes['bboxes'], boxes['labels']):  
+            x1, y1, x2, y2 = bbox  
+            rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=1, edgecolor='r', facecolor='none')    
+            ax.add_patch(rect)  
+            plt.text(x1, y1, label, color='white', fontsize=8, bbox=dict(facecolor='red', alpha=0.5))  
       
     ax.axis('off')  
-      
+    
+    # plt.savefig(f"{title}.png")
     plt.show()

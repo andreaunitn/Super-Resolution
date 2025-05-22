@@ -750,6 +750,7 @@ text_encoder.requires_grad_(False)
 controlnet.train()
 
 ## release the cross-attention part in the unet.
+# TODO: make trainable here the new modules!
 for name, module in unet.named_modules():
     if name.endswith(tuple(args.trainable_modules)):
         print(f'{name} in <unet> will be optimized.' )
