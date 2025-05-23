@@ -15,7 +15,6 @@ from basicsr.utils import FileClient, get_root_logger, imfrombytes, img2tensor
 from PIL import Image
 
 
-
 class SimpleDataset(Dataset):
     def __init__(self, opt, fix_size=512): 
         

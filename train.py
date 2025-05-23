@@ -1001,7 +1001,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
 
                 # Extract soft semantic label (REPRESENTATION BRANCH)
                 ram_encoder_hidden_states = RAM.generate_image_embeds(ram_image)
-            
+
             # ControlNet
             down_block_res_samples, mid_block_res_sample = controlnet(
                 noisy_latents,
