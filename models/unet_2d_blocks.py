@@ -567,6 +567,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         attention_type="default",
         use_image_cross_attention=False,
         image_cross_attention_dim=512,
+        seg_cross_attention_dim=256,
     ):
         super().__init__()
 
@@ -652,8 +653,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                         attention_type=attention_type,
                     )
                 )
-
-        # TODO: aggiungi un altro blocco -> usa Transformer2DModel
+                
         # TCA modules
         self.attentions = nn.ModuleList(attentions)
 
@@ -1058,6 +1058,7 @@ class CrossAttnDownBlock2D(nn.Module):
         attention_type="default",
         use_image_cross_attention=False,
         image_cross_attention_dim=512,
+        seg_cross_attention_dim=256,
     ):
         super().__init__()
         resnets = []
@@ -1067,6 +1068,9 @@ class CrossAttnDownBlock2D(nn.Module):
         self.use_image_cross_attention = use_image_cross_attention
         if self.use_image_cross_attention:
             image_attentions = []
+            
+            segmentation_attentions = []
+
 
         self.has_cross_attention = True
         self.num_attention_heads = num_attention_heads
@@ -1131,6 +1135,21 @@ class CrossAttnDownBlock2D(nn.Module):
                     )
                 )
 
+                segmentation_attentions.append(
+                    Transformer2DModel(
+                        num_attention_heads,
+                        out_channels // num_attention_heads,
+                        in_channels=out_channels,
+                        num_layers=transformer_layers_per_block,
+                        cross_attention_dim=seg_cross_attention_dim,
+                        norm_num_groups=resnet_groups,
+                        use_linear_projection=use_linear_projection,
+                        only_cross_attention=only_cross_attention,
+                        upcast_attention=upcast_attention,
+                        attention_type=attention_type,
+                    )
+                )
+
         # TCA modules
         self.attentions = nn.ModuleList(attentions)
 
@@ -1140,6 +1159,7 @@ class CrossAttnDownBlock2D(nn.Module):
         # RCA modules
         if self.use_image_cross_attention:
             self.image_attentions = nn.ModuleList(image_attentions)
+            self.segmentation_attentions = nn.ModuleList(segmentation_attentions)
 
         if add_downsample:
             self.downsamplers = nn.ModuleList(
@@ -1164,13 +1184,13 @@ class CrossAttnDownBlock2D(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         additional_residuals=None,
         image_encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        segmentation_encoder_hidden_states: Optional[torch.FloatTensor] = None,
     ):
         output_states = ()
 
-
         if self.use_image_cross_attention:
-            blocks = list(zip(self.resnets, self.attentions, self.image_attentions))
-            for i, (resnet, attn, image_attn) in enumerate(blocks):
+            blocks = list(zip(self.resnets, self.attentions, self.image_attentions, self.segmentation_attentions))
+            for i, (resnet, attn, image_attn, seg_attn) in enumerate(blocks):
                 if self.training and self.gradient_checkpointing:
 
                     def create_custom_forward(module, return_dict=None):
@@ -1214,6 +1234,7 @@ class CrossAttnDownBlock2D(nn.Module):
                     )[0]
 
                 else:
+
                     # ResNet
                     hidden_states = resnet(hidden_states, temb)
 
@@ -1242,9 +1263,19 @@ class CrossAttnDownBlock2D(nn.Module):
                         return_dict=False,
                     )[0]
 
-                    # print(f"output RCA: {hidden_states.shape=}")
+                    # print(f"output RCA: {hidden_states.shape=}, {segmentation_encoder_hidden_states.shape=}")
+                    
+                    # # SCA module
+                    hidden_states = seg_attn(
+                        hidden_states,
+                        encoder_hidden_states=segmentation_encoder_hidden_states,
+                        cross_attention_kwargs=cross_attention_kwargs,
+                        attention_mask=attention_mask,
+                        encoder_attention_mask=encoder_attention_mask,
+                        return_dict=False,
+                    )[0]
 
-                    exit()
+                    # print(f"output RCA: {hidden_states.shape=}")
 
                 # apply additional residuals to the output of the last pair of resnet and attention blocks
                 if i == len(blocks) - 1 and additional_residuals is not None:
@@ -2475,6 +2506,7 @@ class CrossAttnUpBlock2D(nn.Module):
                     )[0]
 
                 else:
+                    
                     # ResNet
                     hidden_states = resnet(hidden_states, temb)
 

@@ -64,8 +64,23 @@ def show_anns(img, anns, borders=False, title=None):
     ax.imshow(mask_canvas)
     ax.axis('off')
     plt.tight_layout()
-    # plt.savefig(f"{title}", dpi=300, bbox_inches='tight')
+    # plt.savefig(f"{title}", dpi=300, bbox_inches='tight')
     plt.show()
+
+def get_seg_fig(anns):
+    
+    if not anns:
+        return
+
+    h, w = anns[0]['segmentation'].shape
+    mask_canvas = np.zeros((h, w, 4), dtype=float)
+    
+    for ann in anns:
+        m = ann['segmentation'].astype(bool)
+        color = np.concatenate([np.random.rand(3), [0.5]])
+        mask_canvas[m] = color
+
+    return mask_canvas
 
 def get_seg_embeds(masks, image_embed):
 
@@ -99,7 +114,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--image_dir", type=str, default=None, help="Path of the directory of the SR bicubic upsampled images")
     parser.add_argument("--embed_dir", type=str, default=None, help="Path to the directory of the image embeddings")
-    parser.add_argument("--seg_dir", type=str, default=None, help="Path to the directory of the segmentation masks")
+    parser.add_argument("--seg_dir", type=str, default=None, help="Path to the directory of the segmentation masks embeddings")
+    parser.add_argument("--seg_fig_dir", type=str, default=None, help="Path to the directory of the segmentation mask images")
     parser.add_argument("--max_seg", type=int, default=143, help="Number of masks to keep per image")
     args = parser.parse_args()
 
@@ -110,6 +126,9 @@ if __name__ == "__main__":
 
     if not os.path.exists(args.seg_dir):
         os.makedirs(args.seg_dir)
+
+    if not os.path.exists(args.seg_fig_dir):
+        os.makedirs(args.seg_fig_dir)
 
     images = sorted(os.listdir(args.image_dir))
 
@@ -125,6 +144,8 @@ if __name__ == "__main__":
                     masks = sorted(masks, key=lambda x: x['area'], reverse=True)
                     masks = masks[:args.max_seg]
 
+                    seg_fig = get_seg_fig(masks)
+
                     img = sam2_model.predictor.set_image(img)
                     embeds = sam2_model.predictor.get_image_embedding()
 
@@ -137,5 +158,6 @@ if __name__ == "__main__":
 
                     torch.save(embeds, os.path.join(args.embed_dir, image.replace(".png", ".pt")))
                     torch.save(seg_embeds, os.path.join(args.seg_dir, image.replace(".png", ".pt")))
+                    torch.save(seg_fig, os.path.join(args.seg_fig_dir, image.replace(".png", ".pt")))
 
                     pbar.update(1)

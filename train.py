@@ -675,12 +675,14 @@ if args.unet_model_name_or_path:
 else:
     # resume from pretrained SD
     logger.info("Loading unet weights from SD")
+
     """
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, use_image_cross_attention=True
     )
     """
-    unet = UNet2DConditionModel.from_pretrained(args.seesr_model_path, subfolder="unet")
+
+    unet = UNet2DConditionModel.from_pretrained(args.seesr_model_path, subfolder="unet", use_image_cross_attention=True, device_map=None, low_cpu_mem_usage=False, ignore_mismatched_sizes=True)
     print(f'===== if use ram encoder? {unet.config.use_image_cross_attention}')
 
 if args.controlnet_model_name_or_path:
@@ -1002,6 +1004,9 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 # Extract soft semantic label (REPRESENTATION BRANCH)
                 ram_encoder_hidden_states = RAM.generate_image_embeds(ram_image)
 
+            # Segmentation embeddings
+            segmentation_encoder_hidden_states = batch["sam2_seg_embeds"]
+
             # ControlNet
             down_block_res_samples, mid_block_res_sample = controlnet(
                 noisy_latents,
@@ -1010,7 +1015,10 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 controlnet_cond=controlnet_image,
                 return_dict=False,
                 image_encoder_hidden_states=ram_encoder_hidden_states,
+                segmentation_encoder_hidden_states=segmentation_encoder_hidden_states,
             )
+
+            exit()
 
             # Predict the noise residual -> UNet
             # model_pred -> Torch.Size([1, 4, 64, 64])
