@@ -174,7 +174,7 @@ class RAMLora(nn.Module):
             del layer.attention
 
     def generate_image_embeds(self, image):
-            
+        
         image_embeds = self.image_proj(self.visual_encoder(image))
         
         return image_embeds

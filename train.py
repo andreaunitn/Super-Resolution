@@ -676,12 +676,6 @@ else:
     # resume from pretrained SD
     logger.info("Loading unet weights from SD")
 
-    """
-    unet = UNet2DConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, use_image_cross_attention=True
-    )
-    """
-
     unet = UNet2DConditionModel.from_pretrained(args.seesr_model_path, subfolder="unet", use_image_cross_attention=True, device_map=None, low_cpu_mem_usage=False, ignore_mismatched_sizes=True)
     print(f'===== if use ram encoder? {unet.config.use_image_cross_attention}')
 
@@ -749,12 +743,18 @@ if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
 vae.requires_grad_(False)
 unet.requires_grad_(False)
 text_encoder.requires_grad_(False)
-controlnet.train()
+controlnet.requires_grad_(False)
 
-## release the cross-attention part in the unet.
-# TODO: make trainable here the new modules!
+# Make trainable only the specific modules of ControlNet and UNet 
+for name, module in controlnet.named_modules():
+
+    if "sam2" in name:
+        print(f'{name} in <controlnet> will be optimized.' )
+        for params in module.parameters():
+            params.requires_grad = True
+
 for name, module in unet.named_modules():
-    if name.endswith(tuple(args.trainable_modules)):
+    if "sam2" in name:
         print(f'{name} in <unet> will be optimized.' )
         for params in module.parameters():
             params.requires_grad = True
@@ -993,7 +993,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
             # Compute the embeddings for the tags (TEXT EMBEDDING BRANCH)
             encoder_hidden_states = text_encoder(batch["input_ids"].to(accelerator.device))[0]
 
-            # Low resolution image for the controlnet (IMAGE BRANCH) -> I think the image encoder drawn in the paper is actually inside the controlnet
+            # Low resolution image for the controlnet (IMAGE BRANCH) -> the image encoder drawn in the paper is actually inside the controlnet
             controlnet_image = batch["conditioning_pixel_values"].to(accelerator.device, dtype=weight_dtype)
 
             with torch.no_grad():
@@ -1004,8 +1004,9 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 # Extract soft semantic label (REPRESENTATION BRANCH)
                 ram_encoder_hidden_states = RAM.generate_image_embeds(ram_image)
 
-            # Segmentation embeddings
-            segmentation_encoder_hidden_states = batch["sam2_seg_embeds"]
+                # SAM2 Segmentation + image embeddings
+                sam2_segmentation_encoder_hidden_states = batch["sam2_seg_embeds"]
+                sam2_encoder_hidden_states = batch["sam2_img_embeds"]
 
             # ControlNet
             down_block_res_samples, mid_block_res_sample = controlnet(
@@ -1015,10 +1016,9 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 controlnet_cond=controlnet_image,
                 return_dict=False,
                 image_encoder_hidden_states=ram_encoder_hidden_states,
-                segmentation_encoder_hidden_states=segmentation_encoder_hidden_states,
+                sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
             )
-
-            exit()
 
             # Predict the noise residual -> UNet
             # model_pred -> Torch.Size([1, 4, 64, 64])
@@ -1031,6 +1031,8 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 ],
                 mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
                 image_encoder_hidden_states=ram_encoder_hidden_states,
+                sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
             ).sample
 
             # Get the target for loss depending on the prediction type

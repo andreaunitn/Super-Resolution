@@ -144,11 +144,14 @@ if __name__ == "__main__":
                     masks = sorted(masks, key=lambda x: x['area'], reverse=True)
                     masks = masks[:args.max_seg]
 
+                    # Image of the segmentation masks
                     seg_fig = get_seg_fig(masks)
-
+                    
+                    # Image embeddings
                     img = sam2_model.predictor.set_image(img)
-                    embeds = sam2_model.predictor.get_image_embedding()
+                    embeds = sam2_model.predictor.get_image_embedding().squeeze(0)
 
+                    # Segmentation embeddings
                     seg_embeds = get_seg_embeds(masks, embeds)
 
                     pbar.set_postfix({
