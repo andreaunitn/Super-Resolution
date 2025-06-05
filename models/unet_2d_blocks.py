@@ -710,6 +710,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         sam2_encoder_hidden_states: Optional[torch.FloatTensor] = None,
         sam2_segmentation_encoder_hidden_states: Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
+        
         hidden_states = self.resnets[0](hidden_states, temb)
 
         if self.use_image_cross_attention:
@@ -801,8 +802,9 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     )[0]
 
                     # TODO: add transformer here
-                    hidden_states = tag_hidden_states + dape_hidden_states + sam2_hidden_states + sam2_segmentation_hidden_states
-
+                    # I added * 0.25 to every tensor to avoid scale explosion
+                    hidden_states = hidden_states + (tag_hidden_states * 0.25 + dape_hidden_states * 0.25 + sam2_hidden_states * 0.25 + sam2_segmentation_hidden_states * 0.25)
+                
                     # ResNet
                     hidden_states = resnet(hidden_states, temb)
 
@@ -1118,6 +1120,7 @@ class CrossAttnDownBlock2D(nn.Module):
         use_image_cross_attention=False,
         image_cross_attention_dim=512,
         seg_cross_attention_dim=256,
+        use_parallel_attention=False,
     ):
         super().__init__()
         resnets = []
@@ -1248,6 +1251,7 @@ class CrossAttnDownBlock2D(nn.Module):
             self.downsamplers = None
 
         self.gradient_checkpointing = False
+        self.use_parallel_attention = use_parallel_attention
 
     def forward(
         self,
@@ -1310,7 +1314,7 @@ class CrossAttnDownBlock2D(nn.Module):
                     )[0]
 
                 else:
-
+                    
                     # ResNet
                     hidden_states = resnet(hidden_states, temb)
                     
@@ -1358,12 +1362,13 @@ class CrossAttnDownBlock2D(nn.Module):
                     )[0]
                     
                     # TODO: add transformer here
-                    hidden_states = tag_hidden_states + dape_hidden_states + sam2_hidden_states + sam2_segmentation_hidden_states
+                    # I added * 0.25 to every tensor to avoid scale explosion
+                    hidden_states = hidden_states + (tag_hidden_states * 0.25 + dape_hidden_states * 0.25 + sam2_hidden_states * 0.25 + sam2_segmentation_hidden_states * 0.25)
 
                 # apply additional residuals to the output of the last pair of resnet and attention blocks
                 if i == len(blocks) - 1 and additional_residuals is not None:
                     hidden_states = hidden_states + additional_residuals
-
+                
                 output_states = output_states + (hidden_states,)
 
         else:
@@ -1486,7 +1491,7 @@ class DownBlock2D(nn.Module):
 
         for resnet in self.resnets:
             if self.training and self.gradient_checkpointing:
-
+                
                 def create_custom_forward(module):
                     def custom_forward(*inputs):
                         return module(*inputs)
@@ -1511,9 +1516,8 @@ class DownBlock2D(nn.Module):
                 hidden_states = downsampler(hidden_states)
 
             output_states = output_states + (hidden_states,)
-
+        
         return hidden_states, output_states
-
 
 class DownEncoderBlock2D(nn.Module):
     def __init__(
@@ -2674,17 +2678,16 @@ class CrossAttnUpBlock2D(nn.Module):
                         return_dict=False,
                     )[0]
 
-                    print(f"{tag_hidden_states.shape=}")
-                    print(f"{dape_hidden_states.shape=}")
-                    print(f"{sam2_segmentation_hidden_states.shape=}")
-                    print(f"{sam2_hidden_states.shape=}")
-                    exit()
+                    # print(f"{tag_hidden_states.shape=}")
+                    # print(f"{dape_hidden_states.shape=}")
+                    # print(f"{sam2_segmentation_hidden_states.shape=}")
+                    # print(f"{sam2_hidden_states.shape=}")
 
-                    print(f"{hidden_states.shape=}")
+                    # print(f"{hidden_states.shape=}")
+
                     # TODO: add a transformer here
-                    hidden_states += tag_hidden_states + dape_hidden_states + sam2_hidden_states + sam2_segmentation_hidden_states
-                    print(f"{hidden_states.shape=}")
-                    exit()
+                    # I added * 0.25 to every tensor to avoid scale explosion
+                    hidden_states = hidden_states + (tag_hidden_states * 0.25 + dape_hidden_states * 0.25 + sam2_hidden_states * 0.25 + sam2_segmentation_hidden_states * 0.25)
         else:
             for resnet, attn in zip(self.resnets, self.attentions):
                 # pop res hidden states

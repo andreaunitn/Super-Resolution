@@ -1042,6 +1042,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 target = noise_scheduler.get_velocity(latents, noise, timesteps)
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+            
             loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
             accelerator.backward(loss)

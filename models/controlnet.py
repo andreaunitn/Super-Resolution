@@ -775,6 +775,7 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin):
                     sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                     sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                 )
+
             else:
                 sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
 
