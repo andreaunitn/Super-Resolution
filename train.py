@@ -747,7 +747,6 @@ controlnet.requires_grad_(False)
 
 # Make trainable only the specific modules of ControlNet and UNet 
 for name, module in controlnet.named_modules():
-
     if "sam2" in name:
         print(f'{name} in <controlnet> will be optimized.' )
         for params in module.parameters():
@@ -775,6 +774,12 @@ RAM = ram(pretrained='preset/models/ram_swin_large_14m.pth',
           vit='swin_l')
 
 RAM.eval()
+
+## init SAM2 model
+from masks.run_sam import load
+
+sam2_model = load(tiny_model=True)
+sam2_model.predictor.model.to("cpu")
 
 if args.enable_xformers_memory_efficient_attention:
     if is_xformers_available():
@@ -1042,7 +1047,88 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 target = noise_scheduler.get_velocity(latents, noise, timesteps)
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+
+            """
+            print(f"{model_pred.shape=}")
+            print(f"{model_pred=}")
+            sr_masks = sam2_model.generate(model_pred.float())
+            gt_masks = sam2_model.generate(pixel_values)
+            print(f"{sr_masks=}")
+            print(f"{gt_masks=}")
+            exit()
+            """
+
+            unet.to("cpu")
+            controlnet.to("cpu")
+            sam2_model.predictor.model.to(accelerator.device)
+
+            ################################################################################
+                        # 1) Compute x0_pred from the UNet output (assuming prediction_type="epsilon")
+            alphas_cumprod = noise_scheduler.alphas_cumprod.to(model_pred.device)   # (T,)
+            sqrt_alphas_cumprod = alphas_cumprod.sqrt()                              # (T,)
+            sqrt_one_minus_alphas_cumprod = (1 - alphas_cumprod).sqrt()               # (T,)
+
+            # Gather the scalar for each sample’s timestep:
+            alpha_t = sqrt_alphas_cumprod[timesteps].view(-1,1,1,1)                  # (B,1,1,1)
+            beta_t  = sqrt_one_minus_alphas_cumprod[timesteps].view(-1,1,1,1)         # (B,1,1,1)
+
+            # “Predict” x0:
+            x0_pred = (noisy_latents - beta_t * model_pred) / alpha_t                 # (B,4,64,64)
+
+            # 2) Decode to RGB via your VAE:
+            scaling = vae.config.scaling_factor  # e.g. 0.18215
+            latents_for_decode = x0_pred / scaling
+
+            with torch.no_grad():
+                decoded = vae.decode(latents_for_decode).sample                        # (B,3,512,512), in [-1,+1]
+                sr_rgb = (decoded.clamp(-1,1) + 1.0) / 2.0                              # (B,3,512,512) in [0,1]
+
+            # 3) Convert to the format SAM2 expects.
+            # If SAM2 wants float32 [0..1], do:
+            sr_for_sam = sr_rgb
+
+            # If it needs uint8 PILs:
+            sr_uint8 = (sr_rgb * 255).round().to(torch.uint8)   # (B,3,512,512)
+            sr_for_sam = [transforms.ToPILImage()(sr_uint8[i]) for i in range(sr_uint8.size(0))]
+            sr_sam = np.array(sr_for_sam[0])
+
+            gt_for_sam = pixel_values
+            gt_uint8 = (pixel_values * 255).round().to(torch.uint8)   # (B,3,512,512)
+            gt_for_sam = [transforms.ToPILImage()(gt_uint8[i]) for i in range(gt_uint8.size(0))]
+            gt_sam = np.array(gt_for_sam[0])
+
+            with torch.no_grad(): 
+                # 4) Generate SAM masks:
+                sr_masks = sam2_model.generate(sr_sam)               # shape depends on your SAM2 API
+                gt_masks = sam2_model.generate(gt_sam)
+
+                peak = torch.cuda.max_memory_allocated(accelerator.device)
+                after_alloc = torch.cuda.memory_allocated(accelerator.device)
+
+                sr_union = np.logical_or.reduce([d['segmentation'] for d in sr_masks]).astype(np.float16)
+                gt_union = np.logical_or.reduce([d['segmentation'] for d in gt_masks]).astype(np.float16)
+
+                sr_mask_tensor = torch.from_numpy(sr_union).unsqueeze(0).to(model_pred.device)  # (1,H,W)
+                gt_mask_tensor = torch.from_numpy(gt_union).unsqueeze(0).to(model_pred.device)  # (1,H,W)
+
+            sam2_model.predictor.model.to("cpu")
+            controlnet.to(accelerator.device)
+            unet.to(accelerator.device)
             
+            # loss_sam = F.mse_loss(sr_mask_tensor.float(), gt_mask_tensor.float(), reduction="mean")
+            loss_sam = 1
+            diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+
+            print(f"{diffusion_loss=}")
+            print(f"{loss_sam=}")
+            lambda_sam = 1
+            loss = diffusion_loss + lambda_sam * loss_sam
+
+            # exit()
+
+            ################################################################################
+            # TODO: add sam2 loss
+            print("ciao")
             loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
             accelerator.backward(loss)

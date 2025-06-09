@@ -13,21 +13,29 @@ import cv2
 import os
 from tqdm import tqdm
 
-def load():
+def load(tiny_model=False):
 
     torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
     if torch.cuda.get_device_properties(0).major >= 8:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
+    if not tiny_model:
     # Reduce points_per_batch if it uses too much memory
-    sam2_model = SAM2AutomaticMaskGenerator.from_pretrained("facebook/sam2.1-hiera-large", 
-                                                            apply_postprocessing=False,
-                                                            points_per_side=16,
-                                                            points_per_batch=512,
-                                                            stability_score_thresh=0.0,
-                                                            )
-    
+        sam2_model = SAM2AutomaticMaskGenerator.from_pretrained("facebook/sam2.1-hiera-large", 
+                                                                apply_postprocessing=False,
+                                                                points_per_side=16,
+                                                                points_per_batch=512,
+                                                                stability_score_thresh=0.0,
+                                                                )
+    else:
+        sam2_model = SAM2AutomaticMaskGenerator.from_pretrained("facebook/sam2.1-hiera-tiny", 
+                                                                apply_postprocessing=False,
+                                                                points_per_side=16,
+                                                                points_per_batch=512,
+                                                                stability_score_thresh=0.0,
+                                                                )
+
     return sam2_model
 
 def show_anns(img, anns, borders=False, title=None):

@@ -802,9 +802,8 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     )[0]
 
                     # TODO: add transformer here
-                    # I added * 0.25 to every tensor to avoid scale explosion
-                    hidden_states = hidden_states + (tag_hidden_states * 0.25 + dape_hidden_states * 0.25 + sam2_hidden_states * 0.25 + sam2_segmentation_hidden_states * 0.25)
-                
+                    hidden_states = sam2_hidden_states
+
                     # ResNet
                     hidden_states = resnet(hidden_states, temb)
 
@@ -1362,9 +1361,8 @@ class CrossAttnDownBlock2D(nn.Module):
                     )[0]
                     
                     # TODO: add transformer here
-                    # I added * 0.25 to every tensor to avoid scale explosion
-                    hidden_states = hidden_states + (tag_hidden_states * 0.25 + dape_hidden_states * 0.25 + sam2_hidden_states * 0.25 + sam2_segmentation_hidden_states * 0.25)
-
+                    hidden_states = sam2_hidden_states
+                
                 # apply additional residuals to the output of the last pair of resnet and attention blocks
                 if i == len(blocks) - 1 and additional_residuals is not None:
                     hidden_states = hidden_states + additional_residuals
@@ -2678,16 +2676,8 @@ class CrossAttnUpBlock2D(nn.Module):
                         return_dict=False,
                     )[0]
 
-                    # print(f"{tag_hidden_states.shape=}")
-                    # print(f"{dape_hidden_states.shape=}")
-                    # print(f"{sam2_segmentation_hidden_states.shape=}")
-                    # print(f"{sam2_hidden_states.shape=}")
-
-                    # print(f"{hidden_states.shape=}")
-
                     # TODO: add a transformer here
-                    # I added * 0.25 to every tensor to avoid scale explosion
-                    hidden_states = hidden_states + (tag_hidden_states * 0.25 + dape_hidden_states * 0.25 + sam2_hidden_states * 0.25 + sam2_segmentation_hidden_states * 0.25)
+                    hidden_states = sam2_hidden_states
         else:
             for resnet, attn in zip(self.resnets, self.attentions):
                 # pop res hidden states
