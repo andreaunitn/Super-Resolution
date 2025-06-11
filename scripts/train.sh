@@ -12,7 +12,11 @@ CUDA_VISIBLE_DEVICES="0," accelerate launch train.py \
 --resolution=512 \
 --learning_rate=5e-5 \
 --train_batch_size=1 \
---gradient_accumulation_steps=192 \
+--gradient_accumulation_steps=256 \
 --null_text_ratio=0.5 \
 --dataloader_num_workers=0 \
---checkpointing_steps=10000 
+--checkpointing_steps=10000 \
+--gradient_checkpointing \
+--use_8bit_adam \
+--set_grads_to_none \
+--allow_tf32 \

@@ -757,32 +757,6 @@ for name, module in unet.named_modules():
         for params in module.parameters():
             params.requires_grad = True
 
-## init the RAM or DAPE model
-from ram.models.ram_lora import ram
-
-if args.ram_ft_path is None:
-    print("======== USE Original RAM ========")
-else:
-    print("==============")
-    print(f"USE FT RAM FROM: {args.ram_ft_path}")
-    print("==============")
-
-RAM = ram(pretrained='preset/models/ram_swin_large_14m.pth',
-          pretrained_condition=args.ram_ft_path, 
-          image_size=384,
-          vit='swin_l')
-
-RAM.eval()
-
-## init Florence 2
-from florence2.florence2 import load_florence2, extract_embeds_and_bboxes
-
-print("==============")
-print("USE Florence")
-print("==============")
-
-florence, processor = load_florence2()
-
 if args.enable_xformers_memory_efficient_attention:
     if is_xformers_available():
         import xformers
@@ -815,7 +789,6 @@ if accelerator.unwrap_model(unet).dtype != torch.float32:
     raise ValueError(
         f"Unet loaded as datatype {accelerator.unwrap_model(unet).dtype}. {low_precision_error_string}"
     )
-
 
 # Enable TF32 for faster training on Ampere GPUs,
 # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -899,7 +872,6 @@ elif accelerator.mixed_precision == "bf16":
 # Move vae, unet and text_encoder to device and cast to weight_dtype
 vae.to(accelerator.device, dtype=weight_dtype)
 text_encoder.to(accelerator.device, dtype=weight_dtype)
-RAM.to(accelerator.device, dtype=weight_dtype)
 
 num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
 if overrode_max_train_steps:
@@ -1005,27 +977,8 @@ for epoch in range(first_epoch, args.num_train_epochs):
             controlnet_image = batch["conditioning_pixel_values"].to(accelerator.device, dtype=weight_dtype)
 
             with torch.no_grad():
-
-                # Low resolution image that has been bicubic upsampled for the image encoder inside DAPE (384x384)
-                ram_image = batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
-
-                # Extract soft semantic label (REPRESENTATION BRANCH)
-                ram_encoder_hidden_states = RAM.generate_image_embeds(ram_image)
+                ram_encoder_hidden_states = batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
                 
-                """
-                # Extract image embeds + bboxes using florence 
-                # bbox, florence_encoder_hidden_states = extract_embeds_and_bboxes(florence, processor, pixel_values)
-                
-                # print(f"======== Bounding Boxes: ========")
-                # print(bbox)
-                # print(f"======== Florence 2 embed dims: ========")
-                # print(florence_encoder_hidden_states.shape)
-                # print(f"======== DAPE embed dims: ========")
-                # print(ram_encoder_hidden_states.shape)
-                # print("Text encoder embeds")
-                # print(encoder_hidden_states.shape)
-                # print("=============================================")
-                """
             # controlnet
             down_block_res_samples, mid_block_res_sample = controlnet(
                 noisy_latents,

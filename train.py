@@ -601,7 +601,6 @@ def parse_args(input_args=None):
 args = parse_args()
 logging_dir = Path(args.output_dir, args.logging_dir)
 
-
 from accelerate import DistributedDataParallelKwargs
 ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
@@ -758,29 +757,6 @@ for name, module in unet.named_modules():
         for params in module.parameters():
             params.requires_grad = True
 
-## init the RAM or DAPE model
-from ram.models.ram_lora import ram
-
-if args.ram_ft_path is None:
-    print("======== USE Original RAM ========")
-else:
-    print("==============")
-    print(f"USE FT RAM FROM: {args.ram_ft_path}")
-    print("==============")
-
-RAM = ram(pretrained='preset/models/ram_swin_large_14m.pth',
-          pretrained_condition=args.ram_ft_path, 
-          image_size=384,
-          vit='swin_l')
-
-RAM.eval()
-
-## init SAM2 model
-from masks.run_sam import load
-
-sam2_model = load(tiny_model=True)
-sam2_model.predictor.model.to("cpu")
-
 if args.enable_xformers_memory_efficient_attention:
     if is_xformers_available():
         import xformers
@@ -834,7 +810,7 @@ if args.use_8bit_adam:
             "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
         )
 
-    optimizer_class = bnb.optim.AdamW8bitflroe
+    optimizer_class = bnb.optim.AdamW8bit
 else:
     optimizer_class = torch.optim.AdamW
 
@@ -896,14 +872,13 @@ elif accelerator.mixed_precision == "bf16":
 # Move vae, unet and text_encoder to device and cast to weight_dtype
 vae.to(accelerator.device, dtype=weight_dtype)
 text_encoder.to(accelerator.device, dtype=weight_dtype)
-RAM.to(accelerator.device, dtype=weight_dtype)
+# RAM.to(accelerator.device, dtype=weight_dtype)
 
 num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
 if overrode_max_train_steps:
     args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
 # Afterwards we recalculate our number of training epochs
 args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
-
 
 # We need to initialize the trackers we use, and also store our configuration.
 # The trackers initializes automatically on the main process.
@@ -1004,14 +979,12 @@ for epoch in range(first_epoch, args.num_train_epochs):
             with torch.no_grad():
 
                 # Low resolution image that has been bicubic upsampled for the image encoder inside DAPE (384x384)
-                ram_image = batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
-
-                # Extract soft semantic label (REPRESENTATION BRANCH)
-                ram_encoder_hidden_states = RAM.generate_image_embeds(ram_image)
+                ram_encoder_hidden_states = batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
 
                 # SAM2 Segmentation + image embeddings
                 sam2_segmentation_encoder_hidden_states = batch["sam2_seg_embeds"]
                 sam2_encoder_hidden_states = batch["sam2_img_embeds"]
+
 
             # ControlNet
             down_block_res_samples, mid_block_res_sample = controlnet(
@@ -1040,6 +1013,9 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
             ).sample
 
+            del encoder_hidden_states, controlnet_image, ram_encoder_hidden_states, sam2_encoder_hidden_states, sam2_segmentation_encoder_hidden_states
+            torch.cuda.empty_cache()
+
             # Get the target for loss depending on the prediction type
             if noise_scheduler.config.prediction_type == "epsilon":
                 target = noise
@@ -1048,88 +1024,21 @@ for epoch in range(first_epoch, args.num_train_epochs):
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
-            """
-            print(f"{model_pred.shape=}")
-            print(f"{model_pred=}")
-            sr_masks = sam2_model.generate(model_pred.float())
-            gt_masks = sam2_model.generate(pixel_values)
-            print(f"{sr_masks=}")
-            print(f"{gt_masks=}")
-            exit()
-            """
-
-            unet.to("cpu")
-            controlnet.to("cpu")
-            sam2_model.predictor.model.to(accelerator.device)
-
-            ################################################################################
-                        # 1) Compute x0_pred from the UNet output (assuming prediction_type="epsilon")
-            alphas_cumprod = noise_scheduler.alphas_cumprod.to(model_pred.device)   # (T,)
-            sqrt_alphas_cumprod = alphas_cumprod.sqrt()                              # (T,)
-            sqrt_one_minus_alphas_cumprod = (1 - alphas_cumprod).sqrt()               # (T,)
-
-            # Gather the scalar for each sample’s timestep:
-            alpha_t = sqrt_alphas_cumprod[timesteps].view(-1,1,1,1)                  # (B,1,1,1)
-            beta_t  = sqrt_one_minus_alphas_cumprod[timesteps].view(-1,1,1,1)         # (B,1,1,1)
-
-            # “Predict” x0:
-            x0_pred = (noisy_latents - beta_t * model_pred) / alpha_t                 # (B,4,64,64)
-
-            # 2) Decode to RGB via your VAE:
-            scaling = vae.config.scaling_factor  # e.g. 0.18215
-            latents_for_decode = x0_pred / scaling
-
-            with torch.no_grad():
-                decoded = vae.decode(latents_for_decode).sample                        # (B,3,512,512), in [-1,+1]
-                sr_rgb = (decoded.clamp(-1,1) + 1.0) / 2.0                              # (B,3,512,512) in [0,1]
-
-            # 3) Convert to the format SAM2 expects.
-            # If SAM2 wants float32 [0..1], do:
-            sr_for_sam = sr_rgb
-
-            # If it needs uint8 PILs:
-            sr_uint8 = (sr_rgb * 255).round().to(torch.uint8)   # (B,3,512,512)
-            sr_for_sam = [transforms.ToPILImage()(sr_uint8[i]) for i in range(sr_uint8.size(0))]
-            sr_sam = np.array(sr_for_sam[0])
-
-            gt_for_sam = pixel_values
-            gt_uint8 = (pixel_values * 255).round().to(torch.uint8)   # (B,3,512,512)
-            gt_for_sam = [transforms.ToPILImage()(gt_uint8[i]) for i in range(gt_uint8.size(0))]
-            gt_sam = np.array(gt_for_sam[0])
-
-            with torch.no_grad(): 
-                # 4) Generate SAM masks:
-                sr_masks = sam2_model.generate(sr_sam)               # shape depends on your SAM2 API
-                gt_masks = sam2_model.generate(gt_sam)
-
-                peak = torch.cuda.max_memory_allocated(accelerator.device)
-                after_alloc = torch.cuda.memory_allocated(accelerator.device)
-
-                sr_union = np.logical_or.reduce([d['segmentation'] for d in sr_masks]).astype(np.float16)
-                gt_union = np.logical_or.reduce([d['segmentation'] for d in gt_masks]).astype(np.float16)
-
-                sr_mask_tensor = torch.from_numpy(sr_union).unsqueeze(0).to(model_pred.device)  # (1,H,W)
-                gt_mask_tensor = torch.from_numpy(gt_union).unsqueeze(0).to(model_pred.device)  # (1,H,W)
-
-            sam2_model.predictor.model.to("cpu")
-            controlnet.to(accelerator.device)
-            unet.to(accelerator.device)
-            
-            # loss_sam = F.mse_loss(sr_mask_tensor.float(), gt_mask_tensor.float(), reduction="mean")
-            loss_sam = 1
-            diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-
-            print(f"{diffusion_loss=}")
-            print(f"{loss_sam=}")
-            lambda_sam = 1
-            loss = diffusion_loss + lambda_sam * loss_sam
-
-            # exit()
-
-            ################################################################################
-            # TODO: add sam2 loss
-            print("ciao")
             loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+
+            # alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=latents.device, dtype=latents.dtype)
+            # alpha_bar_t = alphas_cumprod[timesteps]
+
+            # # Reshape for broadcasting: from [B] to [B, 1, 1, 1]
+            # while len(alpha_bar_t.shape) < len(latents.shape):
+            #     alpha_bar_t = alpha_bar_t.unsqueeze(-1)
+            
+            # # Calculate the predicted original sample (x_0)
+            # pred_original_sample_latents = (noisy_latents - (1 - alpha_bar_t).sqrt() * model_pred) / alpha_bar_t.sqrt()
+
+            # # B. Decode the predicted latent to get a predicted image
+            # pred_image_latents_for_vae = pred_original_sample_latents / vae.config.scaling_factor
+            # pred_image = vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
 
             accelerator.backward(loss)
             if accelerator.sync_gradients:
@@ -1173,6 +1082,8 @@ for epoch in range(first_epoch, args.num_train_epochs):
 
         if global_step >= args.max_train_steps:
             break
+    
+    # TODO: maybe here?
 
 # Create the pipeline using the trained modules and save it.
 accelerator.wait_for_everyone()

@@ -23,6 +23,7 @@ class PairedCaptionDataset(data.Dataset):
         self.tag_path_list = []
         self.sam2_img_embeds_list = []
         self.sam2_seg_emebds_list = []
+        self.dape_img_embeds_list = []
 
         root_folders = root_folders.split(',')
         for root_folder in root_folders:
@@ -31,17 +32,20 @@ class PairedCaptionDataset(data.Dataset):
             gt_path = root_folder + '/gt'
             sam2_img_embeds_path = root_folder + '/img_embeds'
             sam2_seg_embeds_path = root_folder + '/seg_embeds'
+            dape_img_embeds_path = root_folder + '/dape_embeds'
 
             self.lr_list += glob.glob(os.path.join(lr_path, '*.png'))
             self.gt_list += glob.glob(os.path.join(gt_path, '*.png'))
             self.tag_path_list += glob.glob(os.path.join(tag_path, '*.txt'))
             self.sam2_img_embeds_list += glob.glob(os.path.join(sam2_img_embeds_path, '*.pt'))
             self.sam2_seg_emebds_list += glob.glob(os.path.join(sam2_seg_embeds_path, '*.pt'))
+            self.dape_img_embeds_list += glob.glob(os.path.join(dape_img_embeds_path, '*.pt'))
 
         assert len(self.lr_list) == len(self.gt_list)
         assert len(self.lr_list) == len(self.tag_path_list)
         assert len(self.lr_list) == len(self.sam2_img_embeds_list)
         assert len(self.lr_list) == len(self.sam2_seg_emebds_list)
+        assert len(self.lr_list) == len(self.dape_img_embeds_list)
 
         self.img_preproc = transforms.Compose([
             transforms.ToTensor(),
@@ -83,12 +87,7 @@ class PairedCaptionDataset(data.Dataset):
         example["pixel_values"] = gt_img.squeeze(0) * 2.0 - 1.0
         example["input_ids"] = self.tokenize_caption(caption=tag).squeeze(0)
 
-        lq_img = lq_img.squeeze()
-
-        ram_values = F.interpolate(lq_img.unsqueeze(0), size=(384, 384), mode='bicubic')
-        ram_values = ram_values.clamp(0.0, 1.0)
-        example["ram_values"] = self.ram_normalize(ram_values.squeeze(0))
-
+        example["ram_values"] = torch.load(self.dape_img_embeds_list[index]).squeeze(0)
         example["sam2_img_embeds"] = torch.load(self.sam2_img_embeds_list[index])
         example["sam2_seg_embeds"] = torch.load(self.sam2_seg_emebds_list[index])
 
