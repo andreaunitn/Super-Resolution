@@ -32,6 +32,7 @@ from transformers import AutoTokenizer, PretrainedConfig
 import diffusers
 from diffusers import (
     AutoencoderKL,
+    AutoencoderTiny,
     DDPMScheduler,
     StableDiffusionControlNetPipeline,
     UniPCMultistepScheduler,
@@ -556,6 +557,7 @@ def parse_args(input_args=None):
     parser.add_argument("--ram_ft_path", type=str, default=None)
     parser.add_argument('--trainable_modules', nargs='*', type=str, default=["image_attentions"])
     parser.add_argument("--seesr_model_path", type=str, default=None)
+    parser.add_argument("--sam2_loss_weight", type=float, default=0.05)
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -596,8 +598,6 @@ def parse_args(input_args=None):
 
     return args
 
-
-# def main(args):
 args = parse_args()
 logging_dir = Path(args.output_dir, args.logging_dir)
 
@@ -658,13 +658,27 @@ text_encoder_cls = import_model_class_from_model_name_or_path(args.pretrained_mo
 
 # Load scheduler and models
 noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
-text_encoder = text_encoder_cls.from_pretrained(
-    args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
-)
+noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.to(accelerator.device)
+
+text_encoder = text_encoder_cls.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, load_in_8bit=True, device_map={"": str(accelerator.device)})
+
 vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision)
-# unet = UNet2DConditionModel.from_pretrained(
-#     args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
-# )
+vae.enable_tiling()
+vae.enable_slicing()
+
+tiny_vae = AutoencoderTiny.from_pretrained("madebyollin/taesd")
+tiny_vae.enable_tiling()
+tiny_vae.enable_slicing()
+
+from utils_data.make_gt_seg import load, pad_existing_mask_tensor
+
+sam2 = load()
+sam2.predictor.model.eval()
+
+# Silence SAM 2 warnings
+sam_logger = logging.getLogger("root")
+sam_logger.setLevel(logging.WARNING)
+
 if args.unet_model_name_or_path:
     # resume from self-train
     logger.info("Loading unet weights from self-train")
@@ -693,15 +707,6 @@ if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
     # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
     def save_model_hook(models, weights, output_dir):
         i = len(weights) - 1
-
-        # while len(weights) > 0:
-        #     weights.pop()
-        #     model = models[i]
-
-        #     sub_dir = "controlnet"
-        #     model.save_pretrained(os.path.join(output_dir, sub_dir))
-
-        #     i -= 1
         assert len(models) == 2 and len(weights) == 2
         for i, model in enumerate(models):
             sub_dir = "unet" if isinstance(model, UNet2DConditionModel) else "controlnet"
@@ -710,16 +715,6 @@ if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
             weights.pop()
 
     def load_model_hook(models, input_dir):
-        # while len(models) > 0:
-        #     # pop models so that they are not loaded again
-        #     model = models.pop()
-
-        #     # load diffusers style into model
-        #     load_model = ControlNetModel.from_pretrained(input_dir, subfolder="controlnet")
-        #     model.register_to_config(**load_model.config)
-
-        #     model.load_state_dict(load_model.state_dict())
-        #     del load_model
         assert len(models) == 2
         for i in range(len(models)):
             # pop models so that they are not loaded again
@@ -740,6 +735,7 @@ if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
     accelerator.register_load_state_pre_hook(load_model_hook)
 
 vae.requires_grad_(False)
+tiny_vae.requires_grad_(False)
 unet.requires_grad_(False)
 text_encoder.requires_grad_(False)
 controlnet.requires_grad_(False)
@@ -869,10 +865,9 @@ if accelerator.mixed_precision == "fp16":
 elif accelerator.mixed_precision == "bf16":
     weight_dtype = torch.bfloat16
 
-# Move vae, unet and text_encoder to device and cast to weight_dtype
+# text_encoder.to(accelerator.device, dtype=weight_dtype)
 vae.to(accelerator.device, dtype=weight_dtype)
-text_encoder.to(accelerator.device, dtype=weight_dtype)
-# RAM.to(accelerator.device, dtype=weight_dtype)
+tiny_vae.to(accelerator.device, dtype=weight_dtype)
 
 num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
 if overrode_max_train_steps:
@@ -896,11 +891,6 @@ if accelerator.is_main_process:
 total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
 logger.info("***** Running training *****")
-# if not isinstance(train_dataset, WebImageDataset):
-#     logger.info(f"  Num examples = {len(train_dataset)}")
-#     logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
-
-
 logger.info(f"  Num examples = {len(train_dataset)}")
 logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
 
@@ -985,7 +975,6 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 sam2_segmentation_encoder_hidden_states = batch["sam2_seg_embeds"]
                 sam2_encoder_hidden_states = batch["sam2_img_embeds"]
 
-
             # ControlNet
             down_block_res_samples, mid_block_res_sample = controlnet(
                 noisy_latents,
@@ -1024,23 +1013,45 @@ for epoch in range(first_epoch, args.num_train_epochs):
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
-            loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-
-            # alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=latents.device, dtype=latents.dtype)
-            # alpha_bar_t = alphas_cumprod[timesteps]
-
-            # # Reshape for broadcasting: from [B] to [B, 1, 1, 1]
-            # while len(alpha_bar_t.shape) < len(latents.shape):
-            #     alpha_bar_t = alpha_bar_t.unsqueeze(-1)
+            ######################################################################################################
+            alphas_cumprod = noise_scheduler.alphas_cumprod
             
-            # # Calculate the predicted original sample (x_0)
-            # pred_original_sample_latents = (noisy_latents - (1 - alpha_bar_t).sqrt() * model_pred) / alpha_bar_t.sqrt()
+            # Get the alpha term for the current timestep t
+            alpha_bar_t = alphas_cumprod[timesteps]
+            
+            # Reshape for broadcasting: from [B] to [B, 1, 1, 1]
+            while len(alpha_bar_t.shape) < len(noisy_latents.shape):
+                alpha_bar_t = alpha_bar_t.unsqueeze(-1)
 
-            # # B. Decode the predicted latent to get a predicted image
-            # pred_image_latents_for_vae = pred_original_sample_latents / vae.config.scaling_factor
-            # pred_image = vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
+            # Predict x0 from xt and epsilon
+            pred_original_sample_latents = (noisy_latents - (1 - alpha_bar_t).sqrt() * model_pred) / alpha_bar_t.sqrt()
+            
+            # Now, decode the predicted original sample as before
+            pred_image_latents_for_vae = pred_original_sample_latents / tiny_vae.config.scaling_factor
+            pred_image = tiny_vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
+            sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0 
+            ######################################################################################################
+            ######################################################################################################
+            MAX_MASKS = 50
 
+            sr_uint8 = (sr_rgb * 255).round().to(torch.uint8)   # (B,3,512,512)
+            sr_for_sam = [transforms.ToPILImage()(sr_uint8[i]) for i in range(sr_uint8.size(0))]
+            sr_sam = np.array(sr_for_sam[0])
+            sr_masks = sam2.generate(sr_sam)
+            sr_masks_tensor = torch.stack([torch.from_numpy(m['segmentation']) for m in sr_masks]).to(accelerator.device).float()
+            sr_masks_tensor = pad_existing_mask_tensor(sr_masks_tensor, MAX_MASKS, accelerator.device)
+
+            gt_masks_tensor = batch["sam2_gt_seg"].squeeze(0)
+            gt_masks_tensor = pad_existing_mask_tensor(gt_masks_tensor, MAX_MASKS, accelerator.device)
+
+            semantic_loss = F.mse_loss(sr_masks_tensor, gt_masks_tensor)
+            ######################################################################################################
+
+            diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+
+            loss = diffusion_loss + args.sam2_loss_weight * semantic_loss
             accelerator.backward(loss)
+
             if accelerator.sync_gradients:
                 # params_to_clip = controlnet.parameters()
                 params_to_clip = list(controlnet.parameters()) + list(unet.parameters())

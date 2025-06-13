@@ -24,6 +24,7 @@ class PairedCaptionDataset(data.Dataset):
         self.sam2_img_embeds_list = []
         self.sam2_seg_emebds_list = []
         self.dape_img_embeds_list = []
+        self.gt_seg_list = []
 
         root_folders = root_folders.split(',')
         for root_folder in root_folders:
@@ -33,6 +34,7 @@ class PairedCaptionDataset(data.Dataset):
             sam2_img_embeds_path = root_folder + '/img_embeds'
             sam2_seg_embeds_path = root_folder + '/seg_embeds'
             dape_img_embeds_path = root_folder + '/dape_embeds'
+            gt_seg_path = root_folder + '/gt_seg'
 
             self.lr_list += glob.glob(os.path.join(lr_path, '*.png'))
             self.gt_list += glob.glob(os.path.join(gt_path, '*.png'))
@@ -40,12 +42,14 @@ class PairedCaptionDataset(data.Dataset):
             self.sam2_img_embeds_list += glob.glob(os.path.join(sam2_img_embeds_path, '*.pt'))
             self.sam2_seg_emebds_list += glob.glob(os.path.join(sam2_seg_embeds_path, '*.pt'))
             self.dape_img_embeds_list += glob.glob(os.path.join(dape_img_embeds_path, '*.pt'))
+            self.gt_seg_list += glob.glob(os.path.join(gt_seg_path, '*.pt'))
 
         assert len(self.lr_list) == len(self.gt_list)
         assert len(self.lr_list) == len(self.tag_path_list)
         assert len(self.lr_list) == len(self.sam2_img_embeds_list)
         assert len(self.lr_list) == len(self.sam2_seg_emebds_list)
         assert len(self.lr_list) == len(self.dape_img_embeds_list)
+        assert len(self.lr_list) == len(self.gt_seg_list)
 
         self.img_preproc = transforms.Compose([
             transforms.ToTensor(),
@@ -90,6 +94,7 @@ class PairedCaptionDataset(data.Dataset):
         example["ram_values"] = torch.load(self.dape_img_embeds_list[index]).squeeze(0)
         example["sam2_img_embeds"] = torch.load(self.sam2_img_embeds_list[index])
         example["sam2_seg_embeds"] = torch.load(self.sam2_seg_emebds_list[index])
+        example["sam2_gt_seg"] = torch.load(self.gt_seg_list[index])
 
         return example
 
