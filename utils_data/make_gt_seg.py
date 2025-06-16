@@ -22,7 +22,6 @@ def load():
 
     sam2_model = SAM2AutomaticMaskGenerator.from_pretrained("facebook/sam2.1-hiera-tiny", 
                                                                 apply_postprocessing=False,
-                                                                points_per_batch=128,
                                                                 stability_score_thresh=0.5,
                                                                 )
 

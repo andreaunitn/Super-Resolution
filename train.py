@@ -257,6 +257,14 @@ def parse_args(input_args=None):
         help="Path to pretrained unet model or model identifier from huggingface.co/models."
         " If not specified controlnet weights are initialized from unet.",
     )
+
+    parser.add_argument(
+        "--tiny_vae_path",
+        type=str,
+        default=None,
+        help="Path to pretrained tiny vae.",
+    )
+
     parser.add_argument(
         "--revision",
         type=str,
@@ -557,7 +565,7 @@ def parse_args(input_args=None):
     parser.add_argument("--ram_ft_path", type=str, default=None)
     parser.add_argument('--trainable_modules', nargs='*', type=str, default=["image_attentions"])
     parser.add_argument("--seesr_model_path", type=str, default=None)
-    parser.add_argument("--sam2_loss_weight", type=float, default=0.05)
+    parser.add_argument("--sam2_loss_weight", type=float, default=1)
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -614,12 +622,13 @@ accelerator = Accelerator(
     kwargs_handlers=[ddp_kwargs]
 )
 
-# Make one log on every process with the configuration for debugging.
+## Make one log on every process with the configuration for debugging.
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
     datefmt="%m/%d/%Y %H:%M:%S",
     level=logging.INFO,
 )
+
 logger.info(accelerator.state, main_process_only=False)
 if accelerator.is_local_main_process:
     transformers.utils.logging.set_verbosity_warning()
@@ -627,6 +636,11 @@ if accelerator.is_local_main_process:
 else:
     transformers.utils.logging.set_verbosity_error()
     diffusers.utils.logging.set_verbosity_error()
+
+# Silence SAM 2 warnings
+sam_logger = logging.getLogger("root")
+sam_logger.setLevel(logging.WARNING)
+logger.setLevel(logging.INFO)
 
 # If passed along, set the training seed now.
 if args.seed is not None:
@@ -653,7 +667,6 @@ elif args.pretrained_model_name_or_path:
         use_fast=False,
     )
 
-# import correct text encoder class
 text_encoder_cls = import_model_class_from_model_name_or_path(args.pretrained_model_name_or_path, args.revision)
 
 # Load scheduler and models
@@ -666,7 +679,7 @@ vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolde
 vae.enable_tiling()
 vae.enable_slicing()
 
-tiny_vae = AutoencoderTiny.from_pretrained("madebyollin/taesd")
+tiny_vae = AutoencoderTiny.from_pretrained(args.tiny_vae_path)
 tiny_vae.enable_tiling()
 tiny_vae.enable_slicing()
 
@@ -674,10 +687,6 @@ from utils_data.make_gt_seg import load, pad_existing_mask_tensor
 
 sam2 = load()
 sam2.predictor.model.eval()
-
-# Silence SAM 2 warnings
-sam_logger = logging.getLogger("root")
-sam_logger.setLevel(logging.WARNING)
 
 if args.unet_model_name_or_path:
     # resume from self-train
@@ -786,7 +795,6 @@ if accelerator.unwrap_model(unet).dtype != torch.float32:
         f"Unet loaded as datatype {accelerator.unwrap_model(unet).dtype}. {low_precision_error_string}"
     )
 
-
 # Enable TF32 for faster training on Ampere GPUs,
 # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
 if args.allow_tf32:
@@ -812,7 +820,15 @@ else:
 
 # Optimizer creation
 print(f'================= Optimize ControlNet and Unet ======================')
-params_to_optimize = list(controlnet.parameters()) + list(unet.parameters())
+
+total_tensors = len(list(controlnet.parameters()) + list(unet.parameters()))
+total_individual_params = sum(p.numel() for p in (list(controlnet.parameters()) + list(unet.parameters())))
+params_to_optimize = [p for p in controlnet.parameters() if p.requires_grad] + [p for p in unet.parameters() if p.requires_grad]
+trainable_tensors = len(params_to_optimize)
+trainable_individual_params = sum(p.numel() for p in params_to_optimize)
+
+print(f"Total Individual Parameters: {total_individual_params:,}")
+print(f"Trainable (ControlNet + UNet) Parameters: {trainable_individual_params:,}\n")
 
 print(f'start to load optimizer...')
 
@@ -1013,6 +1029,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
+            # Take the latent code of the GT image and convert it to the rgb image
             ######################################################################################################
             alphas_cumprod = noise_scheduler.alphas_cumprod
             
@@ -1029,10 +1046,13 @@ for epoch in range(first_epoch, args.num_train_epochs):
             # Now, decode the predicted original sample as before
             pred_image_latents_for_vae = pred_original_sample_latents / tiny_vae.config.scaling_factor
             pred_image = tiny_vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
-            sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0 
+            sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0
+
             ######################################################################################################
+
+            # Compute the segmentation masks
             ######################################################################################################
-            MAX_MASKS = 50
+            MAX_MASKS = 150
 
             sr_uint8 = (sr_rgb * 255).round().to(torch.uint8)   # (B,3,512,512)
             sr_for_sam = [transforms.ToPILImage()(sr_uint8[i]) for i in range(sr_uint8.size(0))]
