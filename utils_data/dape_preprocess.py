@@ -28,7 +28,6 @@ if __name__ == "__main__":
     gt_dir = os.path.join(args.root_dir, 'gt')
     tag_path = os.path.join(args.root_dir, 'tag')
     embed_dir = os.path.join(args.root_dir, 'dape_embeds')
-    os.makedirs(args.embed_dir, exist_ok=True)
     
     DAPE = ram(pretrained='preset/models/ram_swin_large_14m.pth',
           pretrained_condition=args.ram_ft_path, 
@@ -67,7 +66,7 @@ if __name__ == "__main__":
         gt_img = dape_normalize(gt_img).unsqueeze(0).to("cuda")
 
         basename = os.path.basename(gt_path).split('.')[0]
-        
+
         gt_captions = DAPE.generate_tag(gt_img)[0]
         gt_prompt = f"{gt_captions[0]},"
         tag_save_path = tag_path + f'/{basename}.txt'

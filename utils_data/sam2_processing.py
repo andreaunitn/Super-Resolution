@@ -23,7 +23,7 @@ def load(model_size="tiny", points_per_batch=None, points_per_side=None, stabili
     if model_size not in model_name_map:
         raise ValueError(f"Invalid model size: {model_size}. Choose 'tiny' or 'large'.")
 
-    print(f"Loading SAM2 model: {model_name_map[model_size]}")
+    print(f"\nLoading SAM2 model: {model_name_map[model_size]}")
 
     generator_params = {
         "apply_postprocessing": apply_postprocessing,
@@ -42,7 +42,7 @@ def load(model_size="tiny", points_per_batch=None, points_per_side=None, stabili
         torch.backends.cudnn.allow_tf32 = True
 
     sam2_model = SAM2AutomaticMaskGenerator.from_pretrained(model_name_map[model_size], **generator_params)
-    print("SAM2 model loaded successfully.")
+    print("SAM2 model loaded successfully.\n")
 
     return sam2_model
 
@@ -132,13 +132,12 @@ if __name__ == "__main__":
     
     # --- I/O Arguments ---
     parser.add_argument("--image_dir", type=str, required=True, help="Path to the directory of source images.")
-    parser.add_argument("--gt_seg_dir", type=str, help="Path to save the ground-truth segmentation mask tensors (.pt files).")
+    parser.add_argument("--gt_seg_dir", type=str, default=None, help="Path to save the ground-truth segmentation mask tensors (.pt files).")
     parser.add_argument("--embed_dir", type=str, help="Path to save the full image embeddings (.pt files).")
     parser.add_argument("--seg_embed_dir", type=str, help="Path to save the per-mask segmentation embeddings (.pt files).")
     parser.add_argument("--vis_dir", type=str, help="Optional: Path to save visualization images of the masks.")
 
     # --- Model and Generation Arguments ---
-    parser.add_argument("--model_size", type=str, default="tiny", choices=["tiny", "large"], help="SAM2 Hiera model size.")
     parser.add_argument("--max_seg", type=int, default=150, help="Maximum number of masks to keep per image, sorted by area.")
     parser.add_argument("--points_per_side", type=int, help="Points per side for mask generation (for 'large' model).")
     parser.add_argument("--points_per_batch", type=int, default=128, help="Points processed in a batch for mask generation.")
@@ -163,12 +162,21 @@ if __name__ == "__main__":
     if do_vis: os.makedirs(args.vis_dir, exist_ok=True)
 
     # Load model
-    sam2_model = load(
-        model_size=args.model_size,
-        points_per_side=args.points_per_side,
-        points_per_batch=args.points_per_batch,
-        stability_score_thresh=args.stability_score_thresh,
-    )
+    if do_gt_seg:
+        sam2_model = load(
+            model_size="tiny",
+            apply_postprocessing=False,
+            stability_score_thresh=0.5,
+        )
+        
+    else:
+        sam2_model = load(
+            model_size="large",
+            apply_postprocessing=False,
+            points_per_side=16,
+            points_per_batch=512,
+            stability_score_thresh=0.0,
+        )
     
     image_files = sorted([f for f in os.listdir(args.image_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
 

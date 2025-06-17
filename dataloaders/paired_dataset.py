@@ -31,7 +31,7 @@ class PairedCaptionDataset(data.Dataset):
             lr_path = root_folder + '/sr_bicubic'
             tag_path = root_folder + '/tag'
             gt_path = root_folder + '/gt'
-            sam2_img_embeds_path = root_folder + '/img_embeds'
+            sam2_img_embeds_path = root_folder + '/sam_embeds'
             sam2_seg_embeds_path = root_folder + '/seg_embeds'
             dape_img_embeds_path = root_folder + '/dape_embeds'
             gt_seg_path = root_folder + '/gt_seg'
