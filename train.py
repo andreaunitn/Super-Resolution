@@ -683,9 +683,9 @@ tiny_vae = AutoencoderTiny.from_pretrained(args.tiny_vae_path)
 tiny_vae.enable_tiling()
 tiny_vae.enable_slicing()
 
-from utils_data.make_gt_seg import load, pad_existing_mask_tensor
+from utils_data.sam2_processing import load, pad_existing_mask_tensor
 
-sam2 = load()
+sam2 = load(apply_postprocessing=False, stability_score_thresh=0.5)
 sam2.predictor.model.eval()
 
 if args.unet_model_name_or_path:
@@ -821,7 +821,6 @@ else:
 # Optimizer creation
 print(f'================= Optimize ControlNet and Unet ======================')
 
-total_tensors = len(list(controlnet.parameters()) + list(unet.parameters()))
 total_individual_params = sum(p.numel() for p in (list(controlnet.parameters()) + list(unet.parameters())))
 params_to_optimize = [p for p in controlnet.parameters() if p.requires_grad] + [p for p in unet.parameters() if p.requires_grad]
 trainable_tensors = len(params_to_optimize)
