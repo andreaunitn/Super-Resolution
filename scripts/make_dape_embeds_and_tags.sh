@@ -1,3 +1,3 @@
-python -W ignore dape_preprocess.py \
---root_dir="preset/datasets/train_datasets/LSDIR/paired_data" \
+python -W ignore utils_data/dape_preprocess.py \
+--root_dir="preset/datasets/train_datasets/LSDIR/" \
 --ram_ft_path="preset/models/DAPE.pth" \

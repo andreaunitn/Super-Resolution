@@ -55,7 +55,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Creation of the training dataset from LSDIR")
     parser.add_argument("--source_dataset_dir", type=str, default=None, help="Path to the LSDIR dataset")
     parser.add_argument("--destination_dataset_dir", type=str, default=None, help="Where to save the subset")
-    parser.add_argument("--subset_percentage", type=int, default=0.15, help="Percentage of the dataset to take")
+    parser.add_argument("--subset_percentage", type=float, default=0.15, help="Percentage of the dataset to take")
     args = parser.parse_args()
 
     create_dataset_subset(args.source_dataset_dir, args.destination_dataset_dir, args.subset_percentage)

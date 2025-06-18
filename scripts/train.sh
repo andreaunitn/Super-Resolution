@@ -1,24 +1,69 @@
-export PYTHONWARNINGS="ignore"
+#!/bin/bash
 
-# single gpu
-CUDA_VISIBLE_DEVICES="0," accelerate launch train.py \
---pretrained_model_name_or_path="preset/models/stable-diffusion-2-base" \
---seesr_model_path="preset/models/seesr" \
---tiny_vae_path="preset/models/tiny_vae" \
---output_dir="preset/train_output/DIV2K" \
---root_folders 'preset/datasets/train_datasets/DIV2K/paired_data' \
---ram_ft_path 'preset/models/DAPE.pth' \
---enable_xformers_memory_efficient_attention \
---mixed_precision="fp16" \
---resolution=512 \
---learning_rate=5e-6 \
---train_batch_size=1 \
---gradient_accumulation_steps=32 \
---max_train_steps=15000 \
---null_text_ratio=0.5 \
---dataloader_num_workers=0 \
---checkpointing_steps=1000 \
---gradient_checkpointing \
---use_8bit_adam \
---set_grads_to_none \
---allow_tf32 \
+# Paths
+PRETRAINED_MODEL_PATH="preset/models/stable-diffusion-2-base"
+SEESR_MODEL_PATH="preset/models/seesr"
+TINY_VAE_PATH="preset/models/tiny_vae"
+OUTPUT_DIR="preset/train_output/DIV2K"
+ROOT_FOLDERS="preset/datasets/train_datasets/DIV2K/paired_data"
+RAM_FT_PATH="preset/models/DAPE.pth"
+
+# Hyperparameters
+LEARNING_RATE=5e-6
+TRAIN_BATCH_SIZE=1
+GRAD_ACCUM_STEPS=32
+MAX_TRAIN_STEPS=15000
+CHECKPOINTING_STEPS=500
+NULL_TEXT_RATIO=0.5
+RESOLUTION=512
+DATALOADER_WORKERS=0
+CUDA_DEVICES="0"
+
+export PYTHONWARNINGS="ignore"
+export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
+
+echo "Starting training process..."
+echo "Output directory: $OUTPUT_DIR"
+echo "Checkpoints will be saved every $CHECKPOINTING_STEPS steps."
+
+while true
+do
+    accelerate launch train.py \
+      --pretrained_model_name_or_path="$PRETRAINED_MODEL_PATH" \
+      --seesr_model_path="$SEESR_MODEL_PATH" \
+      --tiny_vae_path="$TINY_VAE_PATH" \
+      --output_dir="$OUTPUT_DIR" \
+      --root_folders="$ROOT_FOLDERS" \
+      --ram_ft_path="$RAM_FT_PATH" \
+      --enable_xformers_memory_efficient_attention \
+      --mixed_precision="fp16" \
+      --resolution=$RESOLUTION \
+      --learning_rate=$LEARNING_RATE \
+      --train_batch_size=$TRAIN_BATCH_SIZE \
+      --gradient_accumulation_steps=$GRAD_ACCUM_STEPS \
+      --max_train_steps=$MAX_TRAIN_STEPS \
+      --null_text_ratio=$NULL_TEXT_RATIO \
+      --dataloader_num_workers=$DATALOADER_WORKERS \
+      --checkpointing_steps=$CHECKPOINTING_STEPS \
+      --resume_from_checkpoint="latest" \
+      --gradient_checkpointing \
+      --use_8bit_adam \
+      --set_grads_to_none \
+      --allow_tf32
+
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -eq 0 ]; then
+        echo "-----------------------------------"
+        echo "Training completed successfully."
+        echo "-----------------------------------"
+        break
+    else
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "  Training script failed with exit code $EXIT_CODE."
+        echo "  Restarting from the latest checkpoint in 15 seconds."
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        sleep 15 # Wait for a moment before restarting to avoid rapid-fire crashes
+    fi
+done
+
+    

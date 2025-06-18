@@ -8,20 +8,16 @@ import argparse
 import logging
 import math
 import os
-import random
-import shutil
 from pathlib import Path
 
 import accelerate
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from datasets import load_dataset # ''datasets'' is a library
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image
@@ -45,10 +41,11 @@ from diffusers.utils.import_utils import is_xformers_available
 
 from dataloaders.paired_dataset import PairedCaptionDataset
 
-from typing import Mapping, Any
 from torchvision import transforms
 import torch.nn as nn
 import torch.nn.functional as F
+
+from utils_data.sam2_processing import load, pad_existing_mask_tensor
 
 if is_wandb_available():
     import wandb
@@ -566,6 +563,7 @@ def parse_args(input_args=None):
     parser.add_argument('--trainable_modules', nargs='*', type=str, default=["image_attentions"])
     parser.add_argument("--seesr_model_path", type=str, default=None)
     parser.add_argument("--sam2_loss_weight", type=float, default=1)
+    parser.add_argument("--max_masks", type=int, default=150, help="Maximum number of masks to be generated per image.")
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -682,8 +680,6 @@ vae.enable_slicing()
 tiny_vae = AutoencoderTiny.from_pretrained(args.tiny_vae_path)
 tiny_vae.enable_tiling()
 tiny_vae.enable_slicing()
-
-from utils_data.sam2_processing import load, pad_existing_mask_tensor
 
 sam2 = load(apply_postprocessing=False, stability_score_thresh=0.5)
 sam2.predictor.model.eval()
@@ -1051,17 +1047,15 @@ for epoch in range(first_epoch, args.num_train_epochs):
 
             # Compute the segmentation masks
             ######################################################################################################
-            MAX_MASKS = 150
-
             sr_uint8 = (sr_rgb * 255).round().to(torch.uint8)   # (B,3,512,512)
             sr_for_sam = [transforms.ToPILImage()(sr_uint8[i]) for i in range(sr_uint8.size(0))]
             sr_sam = np.array(sr_for_sam[0])
             sr_masks = sam2.generate(sr_sam)
             sr_masks_tensor = torch.stack([torch.from_numpy(m['segmentation']) for m in sr_masks]).to(accelerator.device).float()
-            sr_masks_tensor = pad_existing_mask_tensor(sr_masks_tensor, MAX_MASKS, accelerator.device)
+            sr_masks_tensor = pad_existing_mask_tensor(sr_masks_tensor, args.max_masks, accelerator.device)
 
             gt_masks_tensor = batch["sam2_gt_seg"].squeeze(0)
-            gt_masks_tensor = pad_existing_mask_tensor(gt_masks_tensor, MAX_MASKS, accelerator.device)
+            gt_masks_tensor = pad_existing_mask_tensor(gt_masks_tensor, args.max_masks, accelerator.device)
 
             semantic_loss = F.mse_loss(sr_masks_tensor, gt_masks_tensor)
             ######################################################################################################
@@ -1112,8 +1106,6 @@ for epoch in range(first_epoch, args.num_train_epochs):
 
         if global_step >= args.max_train_steps:
             break
-    
-    # TODO: maybe here?
 
 # Create the pipeline using the trained modules and save it.
 accelerator.wait_for_everyone()
