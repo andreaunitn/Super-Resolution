@@ -725,20 +725,19 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                         return custom_forward
 
                     def custom_attention_forward(hidden_states, encoder_hidden_states, image_encoder_hidden_states, sam2_encoder_hidden_states, sam2_segmentation_encoder_hidden_states):
-                        with torch.no_grad():
-                            tag_hidden_states = attn(hidden_states, 
-                                                     encoder_hidden_states=encoder_hidden_states, 
-                                                     cross_attention_kwargs=cross_attention_kwargs, 
-                                                     attention_mask=attention_mask, 
-                                                     encoder_attention_mask=encoder_attention_mask, 
-                                                     return_dict=False)[0].detach()
-                            
-                            dape_hidden_states = dape_image_attn(hidden_states, 
-                                                                 encoder_hidden_states=image_encoder_hidden_states, 
-                                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                                                                 attention_mask=attention_mask, 
-                                                                 encoder_attention_mask=encoder_attention_mask, 
-                                                                 return_dict=False)[0].detach()
+                        tag_hidden_states = attn(hidden_states, 
+                                                    encoder_hidden_states=encoder_hidden_states, 
+                                                    cross_attention_kwargs=cross_attention_kwargs, 
+                                                    attention_mask=attention_mask, 
+                                                    encoder_attention_mask=encoder_attention_mask, 
+                                                    return_dict=False)[0]
+                        
+                        dape_hidden_states = dape_image_attn(hidden_states, 
+                                                                encoder_hidden_states=image_encoder_hidden_states, 
+                                                                cross_attention_kwargs=cross_attention_kwargs, 
+                                                                attention_mask=attention_mask, 
+                                                                encoder_attention_mask=encoder_attention_mask, 
+                                                                return_dict=False)[0]
 
                         B, C, H, W = sam2_encoder_hidden_states.shape
                         sam2_hidden_states = sam2_image_attn(hidden_states, 
@@ -776,21 +775,20 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     )
 
                 else: # If not using gradient checkpointing
-
-                    with torch.no_grad():
-                        tag_hidden_states = attn(hidden_states, 
-                                                 encoder_hidden_states=encoder_hidden_states, 
-                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                                                 attention_mask=attention_mask, 
-                                                 encoder_attention_mask=encoder_attention_mask, 
-                                                 return_dict=False)[0].detach()
                         
-                        dape_hidden_states = dape_image_attn(hidden_states, 
-                                                             encoder_hidden_states=image_encoder_hidden_states, 
-                                                             cross_attention_kwargs=cross_attention_kwargs, 
-                                                             attention_mask=attention_mask, 
-                                                             encoder_attention_mask=encoder_attention_mask, 
-                                                             return_dict=False)[0].detach()
+                    tag_hidden_states = attn(hidden_states, 
+                                                encoder_hidden_states=encoder_hidden_states, 
+                                                cross_attention_kwargs=cross_attention_kwargs, 
+                                                attention_mask=attention_mask, 
+                                                encoder_attention_mask=encoder_attention_mask, 
+                                                return_dict=False)[0]
+                    
+                    dape_hidden_states = dape_image_attn(hidden_states, 
+                                                            encoder_hidden_states=image_encoder_hidden_states, 
+                                                            cross_attention_kwargs=cross_attention_kwargs, 
+                                                            attention_mask=attention_mask, 
+                                                            encoder_attention_mask=encoder_attention_mask, 
+                                                            return_dict=False)[0]
 
                     B, C, H, W = sam2_encoder_hidden_states.shape
                     sam2_hidden_states = sam2_image_attn(hidden_states, 
@@ -1290,19 +1288,34 @@ class CrossAttnDownBlock2D(nn.Module):
                     )
                     
                     def custom_attention_forward(hidden_states, encoder_hidden_states, image_encoder_hidden_states, sam2_encoder_hidden_states, sam2_segmentation_encoder_hidden_states):
-                        with torch.no_grad():
-                            tag_hidden_states = attn(hidden_states, 
-                                                     encoder_hidden_states=encoder_hidden_states, 
-                                                     cross_attention_kwargs=cross_attention_kwargs, 
-                                                     attention_mask=attention_mask, 
-                                                     encoder_attention_mask=encoder_attention_mask, 
-                                                     return_dict=False)[0].detach()
-                            
-                            dape_hidden_states = dape_image_attn(hidden_states, encoder_hidden_states=image_encoder_hidden_states, cross_attention_kwargs=cross_attention_kwargs, attention_mask=attention_mask, encoder_attention_mask=encoder_attention_mask, return_dict=False)[0].detach()
+                        tag_hidden_states = attn(hidden_states, 
+                                                    encoder_hidden_states=encoder_hidden_states, 
+                                                    cross_attention_kwargs=cross_attention_kwargs, 
+                                                    attention_mask=attention_mask, 
+                                                    encoder_attention_mask=encoder_attention_mask, 
+                                                    return_dict=False)[0]
+                        
+                        dape_hidden_states = dape_image_attn(hidden_states, 
+                                                                encoder_hidden_states=image_encoder_hidden_states, 
+                                                                cross_attention_kwargs=cross_attention_kwargs, 
+                                                                attention_mask=attention_mask, 
+                                                                encoder_attention_mask=encoder_attention_mask, 
+                                                                return_dict=False)[0]
 
                         B, C, H, W = sam2_encoder_hidden_states.shape
-                        sam2_hidden_states = sam2_image_attn(hidden_states, encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), cross_attention_kwargs=cross_attention_kwargs, attention_mask=attention_mask, encoder_attention_mask=encoder_attention_mask, return_dict=False)[0]
-                        sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, encoder_hidden_states=sam2_segmentation_encoder_hidden_states, cross_attention_kwargs=cross_attention_kwargs, attention_mask=attention_mask, encoder_attention_mask=encoder_attention_mask, return_dict=False)[0]
+                        sam2_hidden_states = sam2_image_attn(hidden_states, 
+                                                             encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
+                                                             cross_attention_kwargs=cross_attention_kwargs, 
+                                                             attention_mask=attention_mask, 
+                                                             encoder_attention_mask=encoder_attention_mask, 
+                                                             return_dict=False)[0]
+                        
+                        sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
+                                                                        encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
+                                                                        cross_attention_kwargs=cross_attention_kwargs, 
+                                                                        attention_mask=attention_mask, 
+                                                                        encoder_attention_mask=encoder_attention_mask, 
+                                                                        return_dict=False)[0]
 
                         all_hidden_states = [tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states]
                         avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
@@ -1322,20 +1335,19 @@ class CrossAttnDownBlock2D(nn.Module):
 
                     hidden_states = resnet(hidden_states, temb)
                     
-                    with torch.no_grad():
-                        tag_hidden_states = attn(hidden_states, 
-                                                 encoder_hidden_states=encoder_hidden_states, 
-                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                                                 attention_mask=attention_mask, 
-                                                 encoder_attention_mask=encoder_attention_mask, 
-                                                 return_dict=False)[0].detach()
-                        
-                        dape_hidden_states = dape_image_attn(hidden_states, 
-                                                             encoder_hidden_states=image_encoder_hidden_states, 
-                                                             cross_attention_kwargs=cross_attention_kwargs, 
-                                                             attention_mask=attention_mask, 
-                                                             encoder_attention_mask=encoder_attention_mask, 
-                                                             return_dict=False)[0].detach()
+                    tag_hidden_states = attn(hidden_states, 
+                                                encoder_hidden_states=encoder_hidden_states, 
+                                                cross_attention_kwargs=cross_attention_kwargs, 
+                                                attention_mask=attention_mask, 
+                                                encoder_attention_mask=encoder_attention_mask, 
+                                                return_dict=False)[0]
+                    
+                    dape_hidden_states = dape_image_attn(hidden_states, 
+                                                            encoder_hidden_states=image_encoder_hidden_states, 
+                                                            cross_attention_kwargs=cross_attention_kwargs, 
+                                                            attention_mask=attention_mask, 
+                                                            encoder_attention_mask=encoder_attention_mask, 
+                                                            return_dict=False)[0]
 
                     B, C, H, W = sam2_encoder_hidden_states.shape
                     sam2_hidden_states = sam2_image_attn(hidden_states, 
@@ -2590,20 +2602,19 @@ class CrossAttnUpBlock2D(nn.Module):
                     )
                     
                     def custom_attention_forward(hidden_states, encoder_hidden_states, image_encoder_hidden_states, sam2_encoder_hidden_states, sam2_segmentation_encoder_hidden_states):
-                        with torch.no_grad():
-                            tag_hidden_states = attn(hidden_states, 
-                                                     encoder_hidden_states=encoder_hidden_states, 
-                                                     cross_attention_kwargs=cross_attention_kwargs, 
-                                                     attention_mask=attention_mask, 
-                                                     encoder_attention_mask=encoder_attention_mask, 
-                                                     return_dict=False)[0].detach()
-                            
-                            dape_hidden_states = dape_image_attn(hidden_states, 
-                                                                 encoder_hidden_states=image_encoder_hidden_states, 
-                                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                                                                 attention_mask=attention_mask, 
-                                                                 encoder_attention_mask=encoder_attention_mask, 
-                                                                 return_dict=False)[0].detach()
+                        tag_hidden_states = attn(hidden_states, 
+                                                    encoder_hidden_states=encoder_hidden_states, 
+                                                    cross_attention_kwargs=cross_attention_kwargs, 
+                                                    attention_mask=attention_mask, 
+                                                    encoder_attention_mask=encoder_attention_mask, 
+                                                    return_dict=False)[0]
+                        
+                        dape_hidden_states = dape_image_attn(hidden_states, 
+                                                                encoder_hidden_states=image_encoder_hidden_states, 
+                                                                cross_attention_kwargs=cross_attention_kwargs, 
+                                                                attention_mask=attention_mask, 
+                                                                encoder_attention_mask=encoder_attention_mask, 
+                                                                return_dict=False)[0]
 
                         B, C, H, W = sam2_encoder_hidden_states.shape
                         sam2_hidden_states = sam2_image_attn(hidden_states, 
@@ -2637,20 +2648,19 @@ class CrossAttnUpBlock2D(nn.Module):
                 else: # If not using gradient checkpointing
                     hidden_states = resnet(hidden_states, temb)
                     
-                    with torch.no_grad():
-                        tag_hidden_states = attn(hidden_states, 
-                                                 encoder_hidden_states=encoder_hidden_states, 
-                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                                                 attention_mask=attention_mask, 
-                                                 encoder_attention_mask=encoder_attention_mask, 
-                                                 return_dict=False)[0].detach()
-                        
-                        dape_hidden_states = dape_image_attn(hidden_states, 
-                                                             encoder_hidden_states=image_encoder_hidden_states, 
-                                                             cross_attention_kwargs=cross_attention_kwargs, 
-                                                             attention_mask=attention_mask, 
-                                                             encoder_attention_mask=encoder_attention_mask, 
-                                                             return_dict=False)[0].detach()
+                    tag_hidden_states = attn(hidden_states, 
+                                                encoder_hidden_states=encoder_hidden_states, 
+                                                cross_attention_kwargs=cross_attention_kwargs, 
+                                                attention_mask=attention_mask, 
+                                                encoder_attention_mask=encoder_attention_mask, 
+                                                return_dict=False)[0]
+                    
+                    dape_hidden_states = dape_image_attn(hidden_states, 
+                                                            encoder_hidden_states=image_encoder_hidden_states, 
+                                                            cross_attention_kwargs=cross_attention_kwargs, 
+                                                            attention_mask=attention_mask, 
+                                                            encoder_attention_mask=encoder_attention_mask, 
+                                                            return_dict=False)[0]
 
                     B, C, H, W = sam2_encoder_hidden_states.shape
                     sam2_hidden_states = sam2_image_attn(hidden_states, 

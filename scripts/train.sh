@@ -4,15 +4,15 @@
 PRETRAINED_MODEL_PATH="preset/models/stable-diffusion-2-base"
 SEESR_MODEL_PATH="preset/models/seesr"
 TINY_VAE_PATH="preset/models/tiny_vae"
-OUTPUT_DIR="preset/train_output/DIV2K"
-ROOT_FOLDERS="preset/datasets/train_datasets/DIV2K/paired_data"
+OUTPUT_DIR="preset/train_output/LSDIR"
+ROOT_FOLDERS="preset/datasets/train_datasets/LSDIR"
 RAM_FT_PATH="preset/models/DAPE.pth"
 
 # Hyperparameters
 LEARNING_RATE=5e-6
 TRAIN_BATCH_SIZE=1
 GRAD_ACCUM_STEPS=32
-MAX_TRAIN_STEPS=15000
+MAX_TRAIN_STEPS=7500
 CHECKPOINTING_STEPS=500
 NULL_TEXT_RATIO=0.5
 RESOLUTION=512
@@ -65,5 +65,3 @@ do
         sleep 15 # Wait for a moment before restarting to avoid rapid-fire crashes
     fi
 done
-
-    

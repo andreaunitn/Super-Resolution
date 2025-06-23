@@ -42,7 +42,6 @@ from diffusers.utils.import_utils import is_xformers_available
 from dataloaders.paired_dataset import PairedCaptionDataset
 
 from torchvision import transforms
-import torch.nn as nn
 import torch.nn.functional as F
 
 from utils_data.sam2_processing import load, pad_existing_mask_tensor
@@ -683,6 +682,20 @@ tiny_vae.enable_slicing()
 
 sam2 = load(apply_postprocessing=False, stability_score_thresh=0.5)
 sam2.predictor.model.eval()
+sam2_image_encoder = sam2.predictor.model.image_encoder
+sam2_norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+# from torchinfo import summary
+
+# sam2_image_encoder_summary = summary(
+#     sam2_image_encoder,
+#     input_size=(1, 3, 1024, 1024),
+#     col_names=["input_size", "output_size", "num_params", "trainable", "mult_adds"],
+#     verbose=0,
+# )
+
+# print(sam2_image_encoder_summary)
+# exit()
 
 if args.unet_model_name_or_path:
     # resume from self-train
@@ -744,6 +757,8 @@ tiny_vae.requires_grad_(False)
 unet.requires_grad_(False)
 text_encoder.requires_grad_(False)
 controlnet.requires_grad_(False)
+sam2_image_encoder.requires_grad_(False)
+sam2_image_encoder.eval()
 
 # Make trainable only the specific modules of ControlNet and UNet 
 for name, module in controlnet.named_modules():
@@ -948,6 +963,49 @@ progress_bar = tqdm(
     disable=not accelerator.is_local_main_process,
 )
 
+from scipy.ndimage import center_of_mass
+
+def get_prompts_from_gt_masks(gt_masks_tensor):
+    """
+    Takes a tensor of ground-truth masks and returns point prompts.
+
+    Args:
+        gt_masks_tensor (torch.Tensor): A tensor of shape [num_masks, H, W] 
+                                        containing binary GT masks.
+
+    Returns:
+        torch.Tensor: Point coordinates of shape [num_masks, 1, 2] (for x, y).
+        torch.Tensor: Point labels of shape [num_masks, 1] (1 for foreground).
+    """
+    # This logic assumes batch size of 1 for simplicity.
+    # It would need to be adapted for batches.
+    
+    # Ensure tensor is on CPU and is a NumPy array for scipy
+    gt_masks_numpy = gt_masks_tensor.cpu().numpy()
+    
+    point_coords = []
+    
+    for i in range(gt_masks_numpy.shape[0]):
+        mask = gt_masks_numpy[i]
+        
+        # Check if the mask is empty to avoid errors
+        if mask.sum() == 0:
+            # Handle empty mask, e.g., by adding a dummy point like (0,0)
+            # or skipping. For simplicity, let's add a dummy point.
+            center = (0, 0)
+        else:
+            # center_of_mass returns (row, col), which corresponds to (y, x)
+            center_y, center_x = center_of_mass(mask)
+            center = (center_x, center_y)
+        
+        point_coords.append(center)
+        
+    # SAM expects points in a specific format: [batch_size, num_points_per_image, 2]
+    # For this setup, we have num_masks prompts, each with 1 point.
+    # We will need to reshape this later in the training loop.
+    # For now, let's just return the list of coordinates.
+    return point_coords
+
 # MAIN TRAINING LOOP
 for epoch in range(first_epoch, args.num_train_epochs):
     for step, batch in enumerate(train_dataloader):
@@ -1013,6 +1071,19 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
             ).sample
 
+            ######################################################################################################
+            # --- COMPUTATIONAL GRAPH DEBUG CHECK 1 ---
+            if step == 1:
+                print("\n--- model_pred.grad_fn Check: Step 1 ---")
+                print(f"model_pred.requires_grad: {model_pred.requires_grad}")
+                print(f"model_pred.is_leaf: {model_pred.is_leaf}")
+                print(f"model_pred.grad_fn: {model_pred.grad_fn}")
+                if model_pred.grad_fn is None:
+                    print("    CRITICAL: Graph broken at model output! Check UNet/ControlNet internals.")
+                else:
+                    print("    OK: Graph is connected after model forward pass.")
+            ######################################################################################################
+
             del encoder_hidden_states, controlnet_image, ram_encoder_hidden_states, sam2_encoder_hidden_states, sam2_segmentation_encoder_hidden_states
             torch.cuda.empty_cache()
 
@@ -1044,25 +1115,109 @@ for epoch in range(first_epoch, args.num_train_epochs):
             sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0
 
             ######################################################################################################
+            # --- COMPUTATIONAL GRAPH DEBUG CHECK 2 ---
+            if step == 1:
+                print("\n--- sr_rgb.grad_fn Check: Step 2 ---")
+                print(f"sr_rgb.grad_fn: {sr_rgb.grad_fn}")
+                if sr_rgb.grad_fn is None:
+                    print("    CRITICAL: Graph broken during sr_rgb derivation! Check VAE decode or math.")
+                else:
+                    print("    OK: Graph is connected up to sr_rgb.")
+            ######################################################################################################
+
+            ######################################################################################################
+            # gt_masks = batch["sam2_gt_seg"].squeeze(0)
+            # gt_point_coords_list = get_prompts_from_gt_masks(gt_masks)
+
+            # # Save this list to your batch dictionary
+            # batch['gt_point_coords'] = gt_point_coords_list
+
+            # point_coords_tensor = torch.tensor(batch['gt_point_coords'], device=accelerator.device).float().unsqueeze(0)
+
+            # # Create corresponding labels (1 for foreground)
+            # # Shape: [batch_size, num_points] -> [1, num_masks]
+            # point_labels_tensor = torch.ones(point_coords_tensor.shape[:-1], device=accelerator.device).float()
+
+            # # 2. Get prompt embeddings using the GT points
+            # #    This operation is differentiable.
+            # sparse_embeddings, dense_embeddings = sam2.predictor.model.sam_prompt_encoder(
+            #     points=(point_coords_tensor, point_labels_tensor),
+            #     boxes=None,
+            #     masks=None,
+            # )
+
+            # # 3. Get image embedding from YOUR generated SR image
+            # encoder_output = sam2.predictor.model.image_encoder(sr_rgb)
+            # sr_image_embedding = encoder_output['vision_features']
+
+            # sr_image_embedding = F.interpolate(
+            #     sr_image_embedding,
+            #     size=(64, 64),
+            #     mode="bilinear",
+            #     align_corners=False,
+            # )
+
+            # # 4. Run the SAM mask decoder on the SR image embedding with the GT prompts
+            # sr_mask_features, _ = sam2.predictor.model.sam_mask_decoder(
+            #     image_embeddings=sr_image_embedding,
+            #     image_pe=sam2.predictor.model.sam_prompt_encoder.get_dense_pe(),
+            #     sparse_prompt_embeddings=sparse_embeddings,
+            #     dense_prompt_embeddings=dense_embeddings,
+            #     multimask_output=False,  # Set to False to get one feature set per prompt
+            #     repeat_image=True
+            # )
+
+            # # 5. Load the pre-computed GT mask features
+            # gt_mask_features = batch['gt_mask_features'].to(accelerator.device)
+
+            # # 6. Compute a DIRECT, DIFFERENTIABLE loss
+            # semantic_loss = F.mse_loss(sr_mask_features, gt_mask_features)
 
             # Compute the segmentation masks
             ######################################################################################################
-            sr_uint8 = (sr_rgb * 255).round().to(torch.uint8)   # (B,3,512,512)
-            sr_for_sam = [transforms.ToPILImage()(sr_uint8[i]) for i in range(sr_uint8.size(0))]
-            sr_sam = np.array(sr_for_sam[0])
-            sr_masks = sam2.generate(sr_sam)
-            sr_masks_tensor = torch.stack([torch.from_numpy(m['segmentation']) for m in sr_masks]).to(accelerator.device).float()
-            sr_masks_tensor = pad_existing_mask_tensor(sr_masks_tensor, args.max_masks, accelerator.device)
 
-            gt_masks_tensor = batch["sam2_gt_seg"].squeeze(0)
-            gt_masks_tensor = pad_existing_mask_tensor(gt_masks_tensor, args.max_masks, accelerator.device)
+            sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
+            sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
 
-            semantic_loss = F.mse_loss(sr_masks_tensor, gt_masks_tensor)
+            with torch.no_grad():
+                gt_rgb_normalized = (pixel_values.to(torch.float32) + 1.0) / 2.0
+
+                gt_sam_input = sam2_norm(gt_rgb_normalized).to(accelerator.device)
+                gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
+
+            semantic_loss = F.mse_loss(sr_embeds.float(), gt_embeds.float(), reduction="mean")
+
+            ######################################################################################################
+            # --- COMPUTATIONAL GRAPH DEBUG CHECK 3---
+            if step == 1:
+                print("\n--- Semantic Loss grad_fn Check ---")
+                print(f"sr_rgb.grad_fn: {sr_rgb.grad_fn}")
+                
+                # Let's trace the break
+                print(f"sr_sam_input.grad_fn: {sr_sam_input.grad_fn}")
+                
+                print(f"sr_embeds.grad_fn: {sr_embeds.grad_fn}")
+                print(f"semantic_loss.grad_fn: {semantic_loss.grad_fn}")
+                print(f"semantic_loss.requires_grad: {semantic_loss.requires_grad}")
+                print("-" * 20)
+            
             ######################################################################################################
 
             diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-
             loss = diffusion_loss + args.sam2_loss_weight * semantic_loss
+            
+            ######################################################################################################
+            # --- COMPUTATIONAL GRAPH DEBUG CHECK 4 ---
+            if step == 1:
+                print("\n--- Main Loss grad_fn Check: Step 3 ---")
+                print(f"loss.grad_fn: {loss.grad_fn}")
+                if loss.grad_fn is None:
+                    print("    CRITICAL: Graph broken at final loss calculation!")
+                else:
+                    print("    OK: Graph is connected up to the final loss function.")
+                print("-" * 20 + "\n")
+            ######################################################################################################
+
             accelerator.backward(loss)
 
             if accelerator.sync_gradients:
@@ -1100,7 +1255,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
                         global_step,
                     )
 
-        logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+        logs = {"loss": loss.detach().item(), "diffusion_loss": diffusion_loss.detach().item(), "semantic_loss": semantic_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
         progress_bar.set_postfix(**logs)
         accelerator.log(logs, step=global_step)
 

@@ -198,7 +198,7 @@ if __name__ == "__main__":
                 gt_masks_tensor = torch.stack([torch.from_numpy(m['segmentation']) for m in masks])
                 torch.save(gt_masks_tensor.cpu(), os.path.join(args.gt_seg_dir, f"{base_name}.pt"))
 
-            #  Save Image and Segmentation Embeddings
+            # Save Image and Segmentation Embeddings
             if do_embeds:
                 sam2_model.predictor.set_image(img_np)
                 image_embedding = sam2_model.predictor.get_image_embedding()
