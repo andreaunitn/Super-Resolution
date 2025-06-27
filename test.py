@@ -21,6 +21,8 @@ from utils.wavelet_color_fix import wavelet_color_fix, adain_color_fix
 from ram.models.ram_lora import ram
 from ram import inference_ram as inference
 
+from utils_data.sam2_processing import load as sam2, get_seg_embeds
+
 from typing import Mapping, Any
 from torchvision import transforms
 import torch.nn as nn
@@ -122,6 +124,12 @@ def load_tag_model(args, device='cuda'):
     model.to(device)
     
     return model
+
+def load_sam():
+    
+    sam = sam2(model_size="large")
+    sam.predictor.model.eval()
+    return sam
     
 def get_validation_prompt(args, image, model, device='cuda'):
     validation_prompt = ""
@@ -134,6 +142,24 @@ def get_validation_prompt(args, image, model, device='cuda'):
     validation_prompt = f"{res[0]}, {args.prompt},"
 
     return validation_prompt, ram_encoder_hidden_states
+
+def get_sam_conditioning(sam2_model, image, device='cuda'):
+
+    import numpy as np
+    img_np = np.array(image.convert("RGB"))
+
+    MAX_SEG = 150
+    masks = sam2_model.generate(img_np)
+
+    masks = sorted(masks, key=lambda x: x['area'], reverse=True)
+    if len(masks) > MAX_SEG:
+        masks = masks[:MAX_SEG]
+
+    sam2_model.predictor.set_image(img_np)
+    image_embedding = sam2_model.predictor.get_image_embedding()
+    seg_embeddings = get_seg_embeds(masks, image_embedding)
+
+    return image_embedding.to(device), seg_embeddings.unsqueeze(0).to(device)
 
 def main(args, enable_xformers_memory_efficient_attention=True,):
     txt_path = os.path.join(args.output_dir, 'txt')
@@ -158,6 +184,7 @@ def main(args, enable_xformers_memory_efficient_attention=True,):
 
     pipeline = load_seesr_pipeline(args, accelerator, enable_xformers_memory_efficient_attention)
     model = load_tag_model(args, accelerator.device)
+    sam = load_sam()
  
     if accelerator.is_main_process:
         generator = torch.Generator(device=accelerator.device)
@@ -185,6 +212,8 @@ def main(args, enable_xformers_memory_efficient_attention=True,):
             
             print(f'{validation_prompt}')
 
+            sam2_encoder_hidden_states, sam2_segmentation_encoder_hidden_staets = get_sam_conditioning(sam, validation_image, device=accelerator.device)
+
             ori_width, ori_height = validation_image.size
             resize_flag = False
             rscale = args.upscale
@@ -211,6 +240,8 @@ def main(args, enable_xformers_memory_efficient_attention=True,):
                             validation_prompt, validation_image, num_inference_steps=args.num_inference_steps, generator=generator, height=height, width=width,
                             guidance_scale=args.guidance_scale, negative_prompt=negative_prompt, conditioning_scale=args.conditioning_scale,
                             start_point=args.start_point, ram_encoder_hidden_states=ram_encoder_hidden_states,
+                            sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                            sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_staets,
                             latent_tiled_size=args.latent_tiled_size, latent_tiled_overlap=args.latent_tiled_overlap,
                             args=args,
                         ).images[0]

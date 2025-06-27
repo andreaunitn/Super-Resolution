@@ -14,6 +14,7 @@ class PairedCaptionDataset(data.Dataset):
             root_folders=None,
             tokenizer=None,
             null_text_ratio=0.5,
+            validation=False,
     ):
         super(PairedCaptionDataset, self).__init__()
 
@@ -26,6 +27,11 @@ class PairedCaptionDataset(data.Dataset):
         self.dape_img_embeds_list = []
         self.gt_seg_list = []
 
+        self.validation = validation
+        
+        if self.validation:
+            self.val_list = []
+
         root_folders = root_folders.split(',')
         for root_folder in root_folders:
             lr_path = root_folder + '/sr_bicubic'
@@ -36,6 +42,9 @@ class PairedCaptionDataset(data.Dataset):
             dape_img_embeds_path = root_folder + '/dape_embeds'
             gt_seg_path = root_folder + '/gt_seg'
 
+            if self.validation:
+                val_path = root_folder + '/validation/HR/val'
+
             self.lr_list += glob.glob(os.path.join(lr_path, '*.png'))
             self.gt_list += glob.glob(os.path.join(gt_path, '*.png'))
             self.tag_path_list += glob.glob(os.path.join(tag_path, '*.txt'))
@@ -43,6 +52,9 @@ class PairedCaptionDataset(data.Dataset):
             self.sam2_seg_emebds_list += glob.glob(os.path.join(sam2_seg_embeds_path, '*.pt'))
             self.dape_img_embeds_list += glob.glob(os.path.join(dape_img_embeds_path, '*.pt'))
             self.gt_seg_list += glob.glob(os.path.join(gt_seg_path, '*.pt'))
+
+            if self.validation:
+                self.val_list += glob.glob(os.path.join(val_path, '*.png'))
 
         assert len(self.lr_list) == len(self.gt_list)
         assert len(self.lr_list) == len(self.tag_path_list)
@@ -78,6 +90,11 @@ class PairedCaptionDataset(data.Dataset):
         lq_img = Image.open(lq_path).convert('RGB')
         lq_img = self.img_preproc(lq_img)
 
+        if self.validation:
+            val_path = self.val_list[index]
+            val_img = Image.open(val_path).convert('RGB')
+            val_img = self.img_preproc(val_img)
+
         if random.random() < self.null_text_ratio:
             tag = ''
         else:
@@ -96,7 +113,13 @@ class PairedCaptionDataset(data.Dataset):
         example["sam2_seg_embeds"] = torch.load(self.sam2_seg_emebds_list[index])
         example["sam2_gt_seg"] = torch.load(self.gt_seg_list[index])
 
+        if self.validation:
+            example["val_pixel_values"] = val_img.squeeze(0) * 2.0 - 1.0
+
         return example
 
     def __len__(self):
-        return len(self.gt_list)
+        if self.validation:
+            return len(self.val_list)
+        else:
+            return len(self.gt_list)

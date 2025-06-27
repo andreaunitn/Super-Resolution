@@ -44,7 +44,9 @@ from dataloaders.paired_dataset import PairedCaptionDataset
 from torchvision import transforms
 import torch.nn.functional as F
 
-from utils_data.sam2_processing import load, pad_existing_mask_tensor
+from utils_data.sam2_processing import load
+
+from models.unet_2d_blocks import CrossAttnDownBlock2D, CrossAttnUpBlock2D, UNetMidBlock2DCrossAttn
 
 if is_wandb_available():
     import wandb
@@ -63,6 +65,113 @@ ram_transforms = transforms.Compose([
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
+def copy_dape_to_sam2_weights(model, accelerator):
+    """
+    Initializes ALL weights of the sam2 attention modules by copying or slicing 
+    from the pre-trained dape (image_attentions) modules.
+    """
+    logger.info(f"Attempting to copy DAPE weights to SAM2 modules for {model.__class__.__name__}...")
+    
+    model_to_copy = accelerator.unwrap_model(model)
+    
+    def transfer_weights(source_attention_module, target_attention_module, block_name, target_name):
+        source_sd = source_attention_module.state_dict()
+        target_sd = target_attention_module.state_dict()
+        
+        new_target_sd = {}
+        
+        for key, target_param in target_sd.items():
+            if key not in source_sd:
+                logger.warning(f"  - Key '{key}' not found in source module. Keeping random init for {block_name}.{target_name}")
+                new_target_sd[key] = target_param.clone()
+                continue
+            
+            source_param = source_sd[key]
+            
+            # Shapes match, it's a direct copy
+            if source_param.shape == target_param.shape:
+                logger.info(f"  - Copying weight for '{key}' in {block_name}.{target_name}")
+                new_target_sd[key] = source_param.clone()
+
+            # Shapes mismatch, cross-attention projection layer.
+            else:
+                # Linear layer weights: [out_features, in_features]
+                if target_param.dim() > 1 and source_param.shape[0] == target_param.shape[0]:
+                    logger.info(f"  - Slicing weight for '{key}' in {block_name}.{target_name}")
+                    slice_dim = target_param.shape[1]
+                    new_target_sd[key] = source_param[:, :slice_dim].clone()
+
+                # Bias terms
+                elif target_param.dim() == 1 and source_param.shape[0] > target_param.shape[0]:
+                     logger.warning(f"  - Mismatched bias term '{key}' in {block_name}.{target_name}. This is unusual.")
+                     slice_dim = target_param.shape[0]
+                     new_target_sd[key] = source_param[:slice_dim].clone()
+                else:
+                    logger.error(f"  - UNHANDLED MISMATCH for '{key}' in {block_name}.{target_name}. "
+                                 f"Source: {source_param.shape}, Target: {target_param.shape}. Keeping random init.")
+                    new_target_sd[key] = target_param.clone()
+
+        target_attention_module.load_state_dict(new_target_sd)
+
+    for block_name, block in model_to_copy.named_modules():
+        if isinstance(block, (CrossAttnDownBlock2D, CrossAttnUpBlock2D, UNetMidBlock2DCrossAttn)) and hasattr(block, 'use_image_cross_attention') and block.use_image_cross_attention:
+            logger.info(f"Processing block: {block_name}")
+            
+            if isinstance(block, UNetMidBlock2DCrossAttn):
+                source_attns = block.attentions
+                target_sam_image_attns = block.image_attentions
+                target_sam_seg_attns = block.sam2_segmentation_attentions
+            else:
+                source_attns = block.image_attentions
+                target_sam_image_attns = block.sam2_image_attentions
+                target_sam_seg_attns = block.sam2_segmentation_attentions
+
+            for i in range(len(source_attns)):
+                source_module = source_attns[i]
+                
+                target_img_module = target_sam_image_attns[i]
+                transfer_weights(source_module, target_img_module, block_name, f"sam2_image_attentions.{i}")
+                
+                target_seg_module = target_sam_seg_attns[i]
+                transfer_weights(source_module, target_seg_module, block_name, f"sam2_segmentation_attentions.{i}")
+
+    logger.info(f"Finished copying weights for {model.__class__.__name__}.")
+
+def verify_weights(accelerator, model):
+    if accelerator.is_main_process:
+        logger.info("--- STARTING WEIGHT VERIFICATION ---")
+        try:
+            unwrapped_model = accelerator.unwrap_model(model)
+            
+            source_module = unwrapped_model.down_blocks[0].image_attentions[0].transformer_blocks[0].attn2
+            target_module = unwrapped_model.down_blocks[0].sam2_image_attentions[0].transformer_blocks[0].attn2
+
+            source_weight = source_module.to_k.weight.detach()
+            target_dim = target_module.to_k.weight.shape[1]
+            source_slice = source_weight[:, :target_dim]
+
+            target_weight_after_copy = target_module.to_k.weight.detach()
+
+            # Perform the check
+            are_equal = torch.allclose(source_slice, target_weight_after_copy)
+            
+            logger.info(f"Source weight shape: {source_weight.shape}")
+            logger.info(f"Target weight shape: {target_weight_after_copy.shape}")
+            logger.info(f"Verification Check: Target weight successfully initialized from source slice? -> {are_equal}")
+
+            if not are_equal:
+                logger.error("VERIFICATION FAILED! Weights were not copied correctly.")
+                diff = torch.abs(source_slice - target_weight_after_copy).max()
+                logger.error(f"Max absolute difference: {diff.item()}")
+            else:
+                logger.info("VERIFICATION PASSED! Weights copied successfully.")
+
+        except Exception as e:
+            logger.error(f"An exception occurred during weight verification: {e}")
+            logger.error("This might be due to an incorrect module path. Check your model structure.")
+            
+        logger.info("--- WEIGHT VERIFICATION COMPLETE ---")
+
 def image_grid(imgs, rows, cols):
     assert len(imgs) == rows * cols
 
@@ -73,104 +182,217 @@ def image_grid(imgs, rows, cols):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
 
-
-def log_validation(vae, text_encoder, tokenizer, unet, controlnet, args, accelerator, weight_dtype, step):
+def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weight_dtype, validation_dataloader):
     logger.info("Running validation... ")
+    logger.info(f"Before validation: {unet.training=}, {controlnet.training=}")
 
-    controlnet = accelerator.unwrap_model(controlnet)
+    val_logs = {}
 
-    pipeline = StableDiffusionControlNetPipeline.from_pretrained(
-        args.pretrained_model_name_or_path,
-        vae=vae,
-        text_encoder=text_encoder,
-        tokenizer=tokenizer,
-        unet=unet,
-        controlnet=controlnet,
-        safety_checker=None,
-        revision=args.revision,
-        torch_dtype=weight_dtype,
-    )
-    pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
-    pipeline = pipeline.to(accelerator.device)
-    pipeline.set_progress_bar_config(disable=True)
+    try:
 
-    if args.enable_xformers_memory_efficient_attention:
-        pipeline.enable_xformers_memory_efficient_attention()
+        unet.eval()
+        controlnet.eval()
 
-    if args.seed is None:
-        generator = None
-    else:
-        generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+        logger.info(f"During validation: {unet.training=}, {controlnet.training=}")
 
-    if len(args.validation_image) == len(args.validation_prompt):
-        validation_images = args.validation_image
-        validation_prompts = args.validation_prompt
-    elif len(args.validation_image) == 1:
-        validation_images = args.validation_image * len(args.validation_prompt)
-        validation_prompts = args.validation_prompt
-    elif len(args.validation_prompt) == 1:
-        validation_images = args.validation_image
-        validation_prompts = args.validation_prompt * len(args.validation_image)
-    else:
-        raise ValueError(
-            "number of `args.validation_image` and `args.validation_prompt` should be checked in `parse_args`"
-        )
+        if validation_dataloader is not None:
+            total_val_loss = 0.0
+            total_val_diffusion_loss = 0.0
+            total_val_semantic_loss = 0.0
+            
+            for val_batch in tqdm(validation_dataloader, desc="Calculating validation loss", disable=not accelerator.is_local_main_process):
+                with torch.no_grad():
+                    pixel_values = val_batch["pixel_values"].to(accelerator.device, dtype=weight_dtype)
+                    latents = vae.encode(pixel_values).latent_dist.sample()
+                    latents = latents * vae.config.scaling_factor
+                    noise = torch.randn_like(latents)
+                    bsz = latents.shape[0]
+                    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device).long()
+                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                    encoder_hidden_states = text_encoder(val_batch["input_ids"].to(accelerator.device))[0]
+                    controlnet_image = val_batch["conditioning_pixel_values"].to(accelerator.device, dtype=weight_dtype)
+                    ram_encoder_hidden_states = val_batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
+                    sam2_segmentation_encoder_hidden_states = val_batch["sam2_seg_embeds"]
+                    sam2_encoder_hidden_states = val_batch["sam2_img_embeds"]
+                    
+                    if args.use_sam2:
+                            
+                        down_block_res_samples, mid_block_res_sample = controlnet(
+                            noisy_latents, timesteps, encoder_hidden_states=encoder_hidden_states, controlnet_cond=controlnet_image,
+                            return_dict=False, image_encoder_hidden_states=ram_encoder_hidden_states,
+                            sam2_encoder_hidden_states=sam2_encoder_hidden_states, sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                        )
+                        
+                        model_pred = unet(
+                            noisy_latents, timesteps, encoder_hidden_states=encoder_hidden_states,
+                            down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
+                            mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
+                            image_encoder_hidden_states=ram_encoder_hidden_states,
+                            sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                            sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
+                        ).sample
 
-    image_logs = []
+                    else:
 
-    for validation_prompt, validation_image in zip(validation_prompts, validation_images):
-        validation_image = Image.open(validation_image).convert("RGB")
+                        down_block_res_samples, mid_block_res_sample = controlnet(
+                            noisy_latents, timesteps, encoder_hidden_states=encoder_hidden_states, controlnet_cond=controlnet_image,
+                            return_dict=False, image_encoder_hidden_states=ram_encoder_hidden_states,
+                            sam2_encoder_hidden_states=None, sam2_segmentation_encoder_hidden_states=None,
+                        )
+                        
+                        model_pred = unet(
+                            noisy_latents, timesteps, encoder_hidden_states=encoder_hidden_states,
+                            down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
+                            mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
+                            image_encoder_hidden_states=ram_encoder_hidden_states,
+                            sam2_encoder_hidden_states=None,
+                            sam2_segmentation_encoder_hidden_states=None
+                        ).sample
 
-        images = []
+                    if noise_scheduler.config.prediction_type == "epsilon":
+                        target = noise
+                    else:
+                        target = noise_scheduler.get_velocity(latents, noise, timesteps)
 
-        for _ in range(args.num_validation_images):
-            with torch.autocast("cuda"):
-                image = pipeline(
-                    validation_prompt, validation_image, num_inference_steps=20, generator=generator
-                ).images[0]
+                    diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                    loss = diffusion_loss
 
-            images.append(image)
+                    if args.use_sam2:
+                        alphas_cumprod = noise_scheduler.alphas_cumprod
+                        alpha_bar_t = alphas_cumprod[timesteps]
 
-        image_logs.append(
-            {"validation_image": validation_image, "images": images, "validation_prompt": validation_prompt}
-        )
+                        while len(alpha_bar_t.shape) < len(noisy_latents.shape):
+                            alpha_bar_t = alpha_bar_t.unsqueeze(-1)
 
-    for tracker in accelerator.trackers:
-        if tracker.name == "tensorboard":
-            for log in image_logs:
-                images = log["images"]
-                validation_prompt = log["validation_prompt"]
-                validation_image = log["validation_image"]
+                        pred_original_sample_latents = (noisy_latents - (1 - alpha_bar_t).sqrt() * model_pred) / alpha_bar_t.sqrt()
+                        pred_image_latents_for_vae = pred_original_sample_latents / tiny_vae.config.scaling_factor
+                        pred_image = tiny_vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
+                        sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0
+                        sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
+                        sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
+                        gt_rgb_normalized = (pixel_values.to(torch.float32) + 1.0) / 2.0
+                        gt_sam_input = sam2_norm(gt_rgb_normalized).to(accelerator.device)
+                        gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
+                        semantic_loss = F.mse_loss(sr_embeds.float(), gt_embeds.float(), reduction="mean")
+                        total_val_semantic_loss += semantic_loss.item()
+                        loss += args.sam2_loss_weight * semantic_loss
 
-                formatted_images = []
+                    total_val_diffusion_loss += diffusion_loss.item()
+                    total_val_loss += loss.item()
 
-                formatted_images.append(np.asarray(validation_image))
+            avg_val_loss = total_val_loss / len(validation_dataloader)
+            avg_val_diffusion_loss = total_val_diffusion_loss / len(validation_dataloader)
+            val_logs = {"val_loss": avg_val_loss, "val_diffusion_loss": avg_val_diffusion_loss}
 
-                for image in images:
-                    formatted_images.append(np.asarray(image))
+            if args.use_sam2:
+                avg_val_semantic_loss = total_val_semantic_loss / len(validation_dataloader)
+                val_logs["val_semantic_loss"] = avg_val_semantic_loss
 
-                formatted_images = np.stack(formatted_images)
+    finally:
+        # Restore original training state of the models
+        unet.train()
+        controlnet.train()
+        logger.info(f"After validation validation: {unet.training=}, {controlnet.training=}\n")
 
-                tracker.writer.add_images(validation_prompt, formatted_images, step, dataformats="NHWC")
-        elif tracker.name == "wandb":
-            formatted_images = []
+    return val_logs
 
-            for log in image_logs:
-                images = log["images"]
-                validation_prompt = log["validation_prompt"]
-                validation_image = log["validation_image"]
+# def log_validation(vae, text_encoder, tokenizer, unet, controlnet, args, accelerator, weight_dtype, step):
+#     logger.info("Running validation... ")
 
-                formatted_images.append(wandb.Image(validation_image, caption="Controlnet conditioning"))
+#     controlnet = accelerator.unwrap_model(controlnet)
 
-                for image in images:
-                    image = wandb.Image(image, caption=validation_prompt)
-                    formatted_images.append(image)
+#     pipeline = StableDiffusionControlNetPipeline.from_pretrained(
+#         args.pretrained_model_name_or_path,
+#         vae=vae,
+#         text_encoder=text_encoder,
+#         tokenizer=tokenizer,
+#         unet=unet,
+#         controlnet=controlnet,
+#         safety_checker=None,
+#         revision=args.revision,
+#         torch_dtype=weight_dtype,
+#     )
+#     pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
+#     pipeline = pipeline.to(accelerator.device)
+#     pipeline.set_progress_bar_config(disable=True)
 
-            tracker.log({"validation": formatted_images})
-        else:
-            logger.warn(f"image logging not implemented for {tracker.name}")
+#     if args.enable_xformers_memory_efficient_attention:
+#         pipeline.enable_xformers_memory_efficient_attention()
 
-        return image_logs
+#     if args.seed is None:
+#         generator = None
+#     else:
+#         generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+
+#     if len(args.validation_image) == len(args.validation_prompt):
+#         validation_images = args.validation_image
+#         validation_prompts = args.validation_prompt
+#     elif len(args.validation_image) == 1:
+#         validation_images = args.validation_image * len(args.validation_prompt)
+#         validation_prompts = args.validation_prompt
+#     elif len(args.validation_prompt) == 1:
+#         validation_images = args.validation_image
+#         validation_prompts = args.validation_prompt * len(args.validation_image)
+#     else:
+#         raise ValueError(
+#             "number of `args.validation_image` and `args.validation_prompt` should be checked in `parse_args`"
+#         )
+
+#     image_logs = []
+
+#     for validation_prompt, validation_image in zip(validation_prompts, validation_images):
+#         validation_image = Image.open(validation_image).convert("RGB")
+
+#         images = []
+
+#         for _ in range(args.num_validation_images):
+#             with torch.autocast("cuda"):
+#                 image = pipeline(
+#                     validation_prompt, validation_image, num_inference_steps=20, generator=generator
+#                 ).images[0]
+
+#             images.append(image)
+
+#         image_logs.append(
+#             {"validation_image": validation_image, "images": images, "validation_prompt": validation_prompt}
+#         )
+
+#     for tracker in accelerator.trackers:
+#         if tracker.name == "tensorboard":
+#             for log in image_logs:
+#                 images = log["images"]
+#                 validation_prompt = log["validation_prompt"]
+#                 validation_image = log["validation_image"]
+
+#                 formatted_images = []
+
+#                 formatted_images.append(np.asarray(validation_image))
+
+#                 for image in images:
+#                     formatted_images.append(np.asarray(image))
+
+#                 formatted_images = np.stack(formatted_images)
+
+#                 tracker.writer.add_images(validation_prompt, formatted_images, step, dataformats="NHWC")
+#         elif tracker.name == "wandb":
+#             formatted_images = []
+
+#             for log in image_logs:
+#                 images = log["images"]
+#                 validation_prompt = log["validation_prompt"]
+#                 validation_image = log["validation_image"]
+
+#                 formatted_images.append(wandb.Image(validation_image, caption="Controlnet conditioning"))
+
+#                 for image in images:
+#                     image = wandb.Image(image, caption=validation_prompt)
+#                     formatted_images.append(image)
+
+#             tracker.log({"validation": formatted_images})
+#         else:
+#             logger.warn(f"image logging not implemented for {tracker.name}")
+
+#         return image_logs
 
 
 def import_model_class_from_model_name_or_path(pretrained_model_name_or_path: str, revision: str):
@@ -560,9 +782,22 @@ def parse_args(input_args=None):
     parser.add_argument("--null_text_ratio", type=float, default=0.5)
     parser.add_argument("--ram_ft_path", type=str, default=None)
     parser.add_argument('--trainable_modules', nargs='*', type=str, default=["image_attentions"])
+
+    parser.add_argument(
+        "--train_tag_and_dape_attentions",
+        action="store_true",
+        help="Set this flag to make only the text (tag) and image (DAPE) attention modules trainable."
+    )
+
     parser.add_argument("--seesr_model_path", type=str, default=None)
     parser.add_argument("--sam2_loss_weight", type=float, default=1)
-    parser.add_argument("--max_masks", type=int, default=150, help="Maximum number of masks to be generated per image.")
+    parser.add_argument("--use_sam2", action="store_true", help="Whether to use SAM2 for image conditioning.")
+    parser.add_argument(
+        "--validation_data_dir",
+        type=str,
+        default=None,
+        help="A folder containing the validation data, with the same structure as the training data.",
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -680,22 +915,10 @@ tiny_vae = AutoencoderTiny.from_pretrained(args.tiny_vae_path)
 tiny_vae.enable_tiling()
 tiny_vae.enable_slicing()
 
-sam2 = load(apply_postprocessing=False, stability_score_thresh=0.5)
-sam2.predictor.model.eval()
-sam2_image_encoder = sam2.predictor.model.image_encoder
-sam2_norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-
-# from torchinfo import summary
-
-# sam2_image_encoder_summary = summary(
-#     sam2_image_encoder,
-#     input_size=(1, 3, 1024, 1024),
-#     col_names=["input_size", "output_size", "num_params", "trainable", "mult_adds"],
-#     verbose=0,
-# )
-
-# print(sam2_image_encoder_summary)
-# exit()
+if args.use_sam2:
+    sam2 = load(apply_postprocessing=False, stability_score_thresh=0.5)
+    sam2_image_encoder = sam2.predictor.model.image_encoder
+    sam2_norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
 if args.unet_model_name_or_path:
     # resume from self-train
@@ -752,26 +975,64 @@ if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
     accelerator.register_save_state_pre_hook(save_model_hook)
     accelerator.register_load_state_pre_hook(load_model_hook)
 
+vae.eval()
 vae.requires_grad_(False)
+tiny_vae.eval()
 tiny_vae.requires_grad_(False)
-unet.requires_grad_(False)
+text_encoder.eval()
 text_encoder.requires_grad_(False)
+
+if args.use_sam2:
+    sam2_image_encoder.eval()
+    sam2_image_encoder.requires_grad_(False)
+
+controlnet.train()
 controlnet.requires_grad_(False)
-sam2_image_encoder.requires_grad_(False)
-sam2_image_encoder.eval()
+unet.train()
+unet.requires_grad_(False)
 
-# Make trainable only the specific modules of ControlNet and UNet 
-for name, module in controlnet.named_modules():
-    if "sam2" in name:
-        print(f'{name} in <controlnet> will be optimized.' )
-        for params in module.parameters():
-            params.requires_grad = True
+if args.train_tag_and_dape_attentions:
+    print("--- Making TAG (text) and DAPE (image) attention modules trainable ---")
+    trainable_module_found = False
 
-for name, module in unet.named_modules():
-    if "sam2" in name:
-        print(f'{name} in <unet> will be optimized.' )
-        for params in module.parameters():
-            params.requires_grad = True
+    for name, module in controlnet.named_modules():
+        if name.endswith("attentions") and "sam2" not in name:
+            for params in module.parameters():
+                params.requires_grad = True
+
+            if not trainable_module_found:
+                print("Found trainable modules in ControlNet:")
+            print(f'  - {name}')
+            trainable_module_found = True
+
+    trainable_module_found = False
+
+    for name, module in unet.named_modules():
+        if name.endswith("image_attentions") and "sam2" not in name:
+            for params in module.parameters():
+                params.requires_grad = True
+
+            if not trainable_module_found:
+                print("Found trainable modules in UNet:")
+            print(f'  - {name}')
+            trainable_module_found = True
+    print("-" * 60)
+
+else:
+    print("--- Making only SAM2 attention modules trainable ---")
+    # This is your original logic for training SAM2 modules
+    for name, module in controlnet.named_modules():
+        if "sam2" in name:
+            print(f'{name} in <controlnet> will be optimized.' )
+            for params in module.parameters():
+                params.requires_grad = True
+
+    for name, module in unet.named_modules():
+        if "sam2" in name:
+            print(f'{name} in <unet> will be optimized.' )
+            for params in module.parameters():
+                params.requires_grad = True
+    print("-" * 60)
 
 if args.enable_xformers_memory_efficient_attention:
     if is_xformers_available():
@@ -842,6 +1103,8 @@ print(f"Trainable (ControlNet + UNet) Parameters: {trainable_individual_params:,
 
 print(f'start to load optimizer...')
 
+# TODO: cambia optimizer e usa SGD
+# lr non cambiare
 optimizer = optimizer_class(
     params_to_optimize,
     lr=args.learning_rate,
@@ -850,13 +1113,30 @@ optimizer = optimizer_class(
     eps=args.adam_epsilon,
 )
 
+logger.info("Creating train dataloader...")
 train_dataset = PairedCaptionDataset(root_folders=args.root_folders,
                                     tokenizer=tokenizer,
                                     null_text_ratio=args.null_text_ratio,
+                                    validation=False,
 )
 
 train_dataloader = torch.utils.data.DataLoader(
     train_dataset,
+    num_workers=args.dataloader_num_workers,
+    batch_size=args.train_batch_size,
+    shuffle=True
+)
+
+logger.info("Creating validation dataloader...")
+validation_dataset = PairedCaptionDataset(
+    root_folders=args.root_folders,
+    tokenizer=tokenizer,
+    null_text_ratio=0.0,
+    validation=True,
+)
+
+validation_dataloader = torch.utils.data.DataLoader(
+    validation_dataset,
     num_workers=args.dataloader_num_workers,
     batch_size=args.train_batch_size,
     shuffle=False
@@ -879,9 +1159,22 @@ lr_scheduler = get_scheduler(
 )
 
 # Prepare everything with our `accelerator`.
-controlnet, unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-    controlnet, unet, optimizer, train_dataloader, lr_scheduler
-)
+if validation_dataloader:
+    controlnet, unet, optimizer, train_dataloader, lr_scheduler, validation_dataloader = accelerator.prepare(
+        controlnet, unet, optimizer, train_dataloader, lr_scheduler, validation_dataloader
+    )
+else:
+    controlnet, unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        controlnet, unet, optimizer, train_dataloader, lr_scheduler
+    )
+
+# if args.use_sam2:
+#     # TODO: verify that is correct
+#     copy_dape_to_sam2_weights(unet, accelerator)
+#     copy_dape_to_sam2_weights(controlnet, accelerator)
+
+#     verify_weights(accelerator, controlnet)
+#     verify_weights(accelerator, unet)
 
 # For mixed precision training we cast the text_encoder and vae weights to half-precision
 # as these models are only used for inference, keeping weights in full precision is not required.
@@ -894,6 +1187,9 @@ elif accelerator.mixed_precision == "bf16":
 # text_encoder.to(accelerator.device, dtype=weight_dtype)
 vae.to(accelerator.device, dtype=weight_dtype)
 tiny_vae.to(accelerator.device, dtype=weight_dtype)
+
+if args.use_sam2:
+    sam2_image_encoder.to(accelerator.device, dtype=weight_dtype)
 
 num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
 if overrode_max_train_steps:
@@ -963,48 +1259,7 @@ progress_bar = tqdm(
     disable=not accelerator.is_local_main_process,
 )
 
-from scipy.ndimage import center_of_mass
-
-def get_prompts_from_gt_masks(gt_masks_tensor):
-    """
-    Takes a tensor of ground-truth masks and returns point prompts.
-
-    Args:
-        gt_masks_tensor (torch.Tensor): A tensor of shape [num_masks, H, W] 
-                                        containing binary GT masks.
-
-    Returns:
-        torch.Tensor: Point coordinates of shape [num_masks, 1, 2] (for x, y).
-        torch.Tensor: Point labels of shape [num_masks, 1] (1 for foreground).
-    """
-    # This logic assumes batch size of 1 for simplicity.
-    # It would need to be adapted for batches.
-    
-    # Ensure tensor is on CPU and is a NumPy array for scipy
-    gt_masks_numpy = gt_masks_tensor.cpu().numpy()
-    
-    point_coords = []
-    
-    for i in range(gt_masks_numpy.shape[0]):
-        mask = gt_masks_numpy[i]
-        
-        # Check if the mask is empty to avoid errors
-        if mask.sum() == 0:
-            # Handle empty mask, e.g., by adding a dummy point like (0,0)
-            # or skipping. For simplicity, let's add a dummy point.
-            center = (0, 0)
-        else:
-            # center_of_mass returns (row, col), which corresponds to (y, x)
-            center_y, center_x = center_of_mass(mask)
-            center = (center_x, center_y)
-        
-        point_coords.append(center)
-        
-    # SAM expects points in a specific format: [batch_size, num_points_per_image, 2]
-    # For this setup, we have num_masks prompts, each with 1 point.
-    # We will need to reshape this later in the training loop.
-    # For now, let's just return the list of coordinates.
-    return point_coords
+image_logs = None
 
 # MAIN TRAINING LOOP
 for epoch in range(first_epoch, args.num_train_epochs):
@@ -1039,7 +1294,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
 
                 # Low resolution image that has been bicubic upsampled for the image encoder inside DAPE (384x384)
                 ram_encoder_hidden_states = batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
-
+            
                 # SAM2 Segmentation + image embeddings
                 sam2_segmentation_encoder_hidden_states = batch["sam2_seg_embeds"]
                 sam2_encoder_hidden_states = batch["sam2_img_embeds"]
@@ -1075,15 +1330,14 @@ for epoch in range(first_epoch, args.num_train_epochs):
             # --- COMPUTATIONAL GRAPH DEBUG CHECK 1 ---
             if step == 1:
                 print("\n--- model_pred.grad_fn Check: Step 1 ---")
-                print(f"model_pred.requires_grad: {model_pred.requires_grad}")
-                print(f"model_pred.is_leaf: {model_pred.is_leaf}")
-                print(f"model_pred.grad_fn: {model_pred.grad_fn}")
+                print(f"    model_pred.requires_grad: {model_pred.requires_grad}")
+                print(f"    model_pred.is_leaf: {model_pred.is_leaf}")
+                print(f"    model_pred.grad_fn: {model_pred.grad_fn}")
+
                 if model_pred.grad_fn is None:
                     print("    CRITICAL: Graph broken at model output! Check UNet/ControlNet internals.")
-                else:
-                    print("    OK: Graph is connected after model forward pass.")
             ######################################################################################################
-
+                
             del encoder_hidden_states, controlnet_image, ram_encoder_hidden_states, sam2_encoder_hidden_states, sam2_segmentation_encoder_hidden_states
             torch.cuda.empty_cache()
 
@@ -1094,134 +1348,91 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 target = noise_scheduler.get_velocity(latents, noise, timesteps)
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-
-            # Take the latent code of the GT image and convert it to the rgb image
-            ######################################################################################################
-            alphas_cumprod = noise_scheduler.alphas_cumprod
-            
-            # Get the alpha term for the current timestep t
-            alpha_bar_t = alphas_cumprod[timesteps]
-            
-            # Reshape for broadcasting: from [B] to [B, 1, 1, 1]
-            while len(alpha_bar_t.shape) < len(noisy_latents.shape):
-                alpha_bar_t = alpha_bar_t.unsqueeze(-1)
-
-            # Predict x0 from xt and epsilon
-            pred_original_sample_latents = (noisy_latents - (1 - alpha_bar_t).sqrt() * model_pred) / alpha_bar_t.sqrt()
-            
-            # Now, decode the predicted original sample as before
-            pred_image_latents_for_vae = pred_original_sample_latents / tiny_vae.config.scaling_factor
-            pred_image = tiny_vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
-            sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0
-
-            ######################################################################################################
-            # --- COMPUTATIONAL GRAPH DEBUG CHECK 2 ---
-            if step == 1:
-                print("\n--- sr_rgb.grad_fn Check: Step 2 ---")
-                print(f"sr_rgb.grad_fn: {sr_rgb.grad_fn}")
-                if sr_rgb.grad_fn is None:
-                    print("    CRITICAL: Graph broken during sr_rgb derivation! Check VAE decode or math.")
-                else:
-                    print("    OK: Graph is connected up to sr_rgb.")
-            ######################################################################################################
-
-            ######################################################################################################
-            # gt_masks = batch["sam2_gt_seg"].squeeze(0)
-            # gt_point_coords_list = get_prompts_from_gt_masks(gt_masks)
-
-            # # Save this list to your batch dictionary
-            # batch['gt_point_coords'] = gt_point_coords_list
-
-            # point_coords_tensor = torch.tensor(batch['gt_point_coords'], device=accelerator.device).float().unsqueeze(0)
-
-            # # Create corresponding labels (1 for foreground)
-            # # Shape: [batch_size, num_points] -> [1, num_masks]
-            # point_labels_tensor = torch.ones(point_coords_tensor.shape[:-1], device=accelerator.device).float()
-
-            # # 2. Get prompt embeddings using the GT points
-            # #    This operation is differentiable.
-            # sparse_embeddings, dense_embeddings = sam2.predictor.model.sam_prompt_encoder(
-            #     points=(point_coords_tensor, point_labels_tensor),
-            #     boxes=None,
-            #     masks=None,
-            # )
-
-            # # 3. Get image embedding from YOUR generated SR image
-            # encoder_output = sam2.predictor.model.image_encoder(sr_rgb)
-            # sr_image_embedding = encoder_output['vision_features']
-
-            # sr_image_embedding = F.interpolate(
-            #     sr_image_embedding,
-            #     size=(64, 64),
-            #     mode="bilinear",
-            #     align_corners=False,
-            # )
-
-            # # 4. Run the SAM mask decoder on the SR image embedding with the GT prompts
-            # sr_mask_features, _ = sam2.predictor.model.sam_mask_decoder(
-            #     image_embeddings=sr_image_embedding,
-            #     image_pe=sam2.predictor.model.sam_prompt_encoder.get_dense_pe(),
-            #     sparse_prompt_embeddings=sparse_embeddings,
-            #     dense_prompt_embeddings=dense_embeddings,
-            #     multimask_output=False,  # Set to False to get one feature set per prompt
-            #     repeat_image=True
-            # )
-
-            # # 5. Load the pre-computed GT mask features
-            # gt_mask_features = batch['gt_mask_features'].to(accelerator.device)
-
-            # # 6. Compute a DIRECT, DIFFERENTIABLE loss
-            # semantic_loss = F.mse_loss(sr_mask_features, gt_mask_features)
-
-            # Compute the segmentation masks
-            ######################################################################################################
-
-            sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
-            sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
-
-            with torch.no_grad():
-                gt_rgb_normalized = (pixel_values.to(torch.float32) + 1.0) / 2.0
-
-                gt_sam_input = sam2_norm(gt_rgb_normalized).to(accelerator.device)
-                gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
-
-            semantic_loss = F.mse_loss(sr_embeds.float(), gt_embeds.float(), reduction="mean")
-
-            ######################################################################################################
-            # --- COMPUTATIONAL GRAPH DEBUG CHECK 3---
-            if step == 1:
-                print("\n--- Semantic Loss grad_fn Check ---")
-                print(f"sr_rgb.grad_fn: {sr_rgb.grad_fn}")
                 
-                # Let's trace the break
-                print(f"sr_sam_input.grad_fn: {sr_sam_input.grad_fn}")
+            if args.use_sam2:
+                # Take the latent code of the GT image and convert it to the rgb image
+                ######################################################################################################
+                alphas_cumprod = noise_scheduler.alphas_cumprod
                 
-                print(f"sr_embeds.grad_fn: {sr_embeds.grad_fn}")
-                print(f"semantic_loss.grad_fn: {semantic_loss.grad_fn}")
-                print(f"semantic_loss.requires_grad: {semantic_loss.requires_grad}")
+                # Get the alpha term for the current timestep t
+                alpha_bar_t = alphas_cumprod[timesteps]
+                
+                # Reshape for broadcasting: from [B] to [B, 1, 1, 1]
+                while len(alpha_bar_t.shape) < len(noisy_latents.shape):
+                    alpha_bar_t = alpha_bar_t.unsqueeze(-1)
+
+                # Predict x0 from xt and epsilon
+                pred_original_sample_latents = (noisy_latents - (1 - alpha_bar_t).sqrt() * model_pred) / alpha_bar_t.sqrt()
+                
+                # Now, decode the predicted original sample as before
+                pred_image_latents_for_vae = pred_original_sample_latents / tiny_vae.config.scaling_factor
+                pred_image = tiny_vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
+                sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0
+
+                ######################################################################################################
+                # --- COMPUTATIONAL GRAPH DEBUG CHECK 2 ---
+                if step == 1:
+                    print("\n--- sr_rgb.grad_fn Check: Step 2 ---")
+                    print(f"    sr_rgb.grad_fn: {sr_rgb.grad_fn}")
+
+                    if sr_rgb.grad_fn is None:
+                        print("    CRITICAL: Graph broken during sr_rgb derivation! Check VAE decode or math.")
+
+                ######################################################################################################
+
+                sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
+                sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
+
+                with torch.no_grad():
+                    gt_sam_input = sam2_norm(pixel_values).to(accelerator.device)
+                    gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
+
+                semantic_loss = F.mse_loss(sr_embeds.float(), gt_embeds.float(), reduction="mean")
+
+                ######################################################################################################
+                # --- COMPUTATIONAL GRAPH DEBUG CHECK 3 ---
+                if step == 1:
+                    print("\n--- Semantic Loss grad_fn Check: Step 3 ---")
+                    print(f"    sr_rgb.grad_fn: {sr_rgb.grad_fn}")
+                    print(f"    sr_sam_input.grad_fn: {sr_sam_input.grad_fn}")
+                    print(f"    sr_embeds.grad_fn: {sr_embeds.grad_fn}")
+                    print(f"    semantic_loss.grad_fn: {semantic_loss.grad_fn}")
+                    print(f"    semantic_loss.requires_grad: {semantic_loss.requires_grad}")
+                    print("-" * 20)
+                
+                ######################################################################################################
+
+            diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+
+            ######################################################################################################
+            # --- COMPUTATIONAL GRAPH DEBUG CHECK 4 ---
+            if step == 1:
+                print("\n--- Dissusion Loss grad_fn Check: Step 4 ---")
+                print(f"    diffusion_loss.requires_grad: {diffusion_loss.requires_grad}")
                 print("-" * 20)
             
             ######################################################################################################
 
-            diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-            loss = diffusion_loss + args.sam2_loss_weight * semantic_loss
+            if args.use_sam2:
+                loss = diffusion_loss + args.sam2_loss_weight * semantic_loss
+            else:
+                loss = diffusion_loss
             
             ######################################################################################################
-            # --- COMPUTATIONAL GRAPH DEBUG CHECK 4 ---
+            # --- COMPUTATIONAL GRAPH DEBUG CHECK 5 ---
             if step == 1:
-                print("\n--- Main Loss grad_fn Check: Step 3 ---")
-                print(f"loss.grad_fn: {loss.grad_fn}")
+                print("\n--- Main Loss grad_fn Check: Step 5 ---")
+                print(f"    loss.grad_fn: {loss.grad_fn}")
+
                 if loss.grad_fn is None:
                     print("    CRITICAL: Graph broken at final loss calculation!")
-                else:
-                    print("    OK: Graph is connected up to the final loss function.")
+
                 print("-" * 20 + "\n")
             ######################################################################################################
 
             accelerator.backward(loss)
 
             if accelerator.sync_gradients:
-                # params_to_clip = controlnet.parameters()
                 params_to_clip = list(controlnet.parameters()) + list(unet.parameters())
                 accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
@@ -1229,6 +1440,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
             lr_scheduler.step()
             optimizer.zero_grad(set_to_none=args.set_grads_to_none)
 
+        validation_loss = None
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:
             progress_bar.update(1)
@@ -1241,21 +1453,33 @@ for epoch in range(first_epoch, args.num_train_epochs):
                     accelerator.save_state(save_path)
                     logger.info(f"Saved state to {save_path}")
 
-                # if args.validation_prompt is not None and global_step % args.validation_steps == 0:
-                if False:
-                    image_logs = log_validation(
+                if args.validation_prompt is not None and global_step % args.validation_steps == 0:
+                    val_logs = log_validation(
                         vae,
                         text_encoder,
-                        tokenizer,
                         unet,
                         controlnet,
                         args,
                         accelerator,
                         weight_dtype,
-                        global_step,
+                        validation_dataloader,
                     )
 
-        logs = {"loss": loss.detach().item(), "diffusion_loss": diffusion_loss.detach().item(), "semantic_loss": semantic_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+                    validation_loss = val_logs["val_loss"]
+
+        if args.use_sam2:
+            logs = {"loss/train": loss.detach().item(), "loss/train_diffusion": diffusion_loss.detach().item(), "loss/train_semantic": semantic_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+
+            if validation_loss is not None:
+                logger.info(f"validation_loss: {validation_loss:.4f}")
+                logs["loss/validation"] = validation_loss
+        else:
+            logs = {"loss/train": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+
+            if validation_loss is not None:
+                logs["loss/validation"] = validation_loss
+                logger.info(f"validation_loss: {validation_loss:.4f}")
+
         progress_bar.set_postfix(**logs)
         accelerator.log(logs, step=global_step)
 

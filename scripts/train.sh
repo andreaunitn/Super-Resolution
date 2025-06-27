@@ -18,6 +18,10 @@ NULL_TEXT_RATIO=0.5
 RESOLUTION=512
 DATALOADER_WORKERS=0
 CUDA_DEVICES="0"
+SAM_LOSS_WEIGHT=1
+LR_WARMUP_STEPS=500
+LR_SCHEDULER="constant"
+VALIDATION_STEPS=200
 
 export PYTHONWARNINGS="ignore"
 export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
@@ -45,11 +49,18 @@ do
       --null_text_ratio=$NULL_TEXT_RATIO \
       --dataloader_num_workers=$DATALOADER_WORKERS \
       --checkpointing_steps=$CHECKPOINTING_STEPS \
-      --resume_from_checkpoint="latest" \
       --gradient_checkpointing \
       --use_8bit_adam \
       --set_grads_to_none \
-      --allow_tf32
+      --allow_tf32 \
+      --sam2_loss_weight=$SAM_LOSS_WEIGHT \
+      --lr_warmup_steps=$LR_WARMUP_STEPS \
+      --lr_scheduler=$LR_SCHEDULER \
+      --validation_image=$VALIDATION_PATH \
+      --validation_prompt="" \
+      --resume_from_checkpoint="latest" \
+      --validation_steps=$VALIDATION_STEPS \
+      --train_tag_and_dape_attentions \
 
     EXIT_CODE=$?
     if [ $EXIT_CODE -eq 0 ]; then
