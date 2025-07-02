@@ -59,7 +59,9 @@ do
       --lr_scheduler=$LR_SCHEDULER \
       --validation_steps=$VALIDATION_STEPS \
       --resume_from_checkpoint="latest" \
+      --train_controlnet_tag_attention \
       --train_controlnet_dape_attention \
+      --train_unet_tag_attention \
       --train_unet_dape_attention \
 
     EXIT_CODE=$?

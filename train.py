@@ -822,11 +822,19 @@ def parse_args(input_args=None):
     parser.add_argument("--seesr_model_path", type=str, default=None)
     parser.add_argument("--sam2_loss_weight", type=float, default=1)
     parser.add_argument("--use_sam2", action="store_true", help="Whether to use SAM2 for image conditioning.")
+
     parser.add_argument(
         "--validation_data_dir",
         type=str,
         default=None,
         help="A folder containing the validation data, with the same structure as the training data.",
+    )
+
+    parser.add_argument(
+        "--finetune_from_checkpoint",
+        type=str,
+        default=None,
+        help="Path to a full checkpoint directory (containing models, optimizer, scheduler) to start finetuning from."
     )
 
     if input_args is not None:
