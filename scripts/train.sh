@@ -7,6 +7,7 @@ TINY_VAE_PATH="preset/models/tiny_vae"
 OUTPUT_DIR="preset/train_output/LSDIR"
 ROOT_FOLDERS="preset/datasets/train_datasets/LSDIR"
 RAM_FT_PATH="preset/models/DAPE.pth"
+VALIDATION_PATH="preset/datasets/test_datasets/RealSR/test_LR"
 
 # Hyperparameters
 LEARNING_RATE=5e-6
@@ -34,6 +35,7 @@ while true
 do
     accelerate launch train.py \
       --pretrained_model_name_or_path="$PRETRAINED_MODEL_PATH" \
+      --controlnet_model_name_or_path="$SEESR_MODEL_PATH" \
       --seesr_model_path="$SEESR_MODEL_PATH" \
       --tiny_vae_path="$TINY_VAE_PATH" \
       --output_dir="$OUTPUT_DIR" \
@@ -53,14 +55,12 @@ do
       --use_8bit_adam \
       --set_grads_to_none \
       --allow_tf32 \
-      --sam2_loss_weight=$SAM_LOSS_WEIGHT \
       --lr_warmup_steps=$LR_WARMUP_STEPS \
       --lr_scheduler=$LR_SCHEDULER \
-      --validation_image=$VALIDATION_PATH \
-      --validation_prompt="" \
-      --resume_from_checkpoint="latest" \
       --validation_steps=$VALIDATION_STEPS \
-      --train_tag_and_dape_attentions \
+      --resume_from_checkpoint="latest" \
+      --train_controlnet_dape_attention \
+      --train_unet_dape_attention \
 
     EXIT_CODE=$?
     if [ $EXIT_CODE -eq 0 ]; then

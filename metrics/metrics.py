@@ -49,7 +49,7 @@ def compute_metrics(args):
         for dataset in args.datasets:
 
             sr_dir = os.path.join(SR_PREFIX, dataset + "/sample00")
-            gt_dir = os.path.join(GT_PREFIX, dataset + "/test_HR_10_img")
+            gt_dir = os.path.join(GT_PREFIX, dataset + "/test_HR")
 
             print("######################################################################################")
             print(f"Initializing IQA metric models for {dataset}")
@@ -125,14 +125,14 @@ def compute_metrics(args):
             # metrics to log per dataset
             metrics_to_log[dataset] = get_metrics(metrics)
 
+            for metric in metrics_to_log[dataset]:
+                print(f"{metric=}")
+
         # saving metrics
         with open(METRICS_PATH, "w") as f:
             json.dump(metrics_to_log, f, indent=4)
 
     HIGHER_IS_BETTER = ["psnr", "ssim", "maniqa", "musiq", "clipiqa"]
-
-    for metric in metrics_to_log["DRealSR"]:
-        print(f"{metric=}")
 
     # log metrics for wandb
     ALL_METRICS = sorted({

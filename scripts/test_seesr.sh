@@ -3,8 +3,10 @@ python -W ignore test_seesr.py \
 --prompt None \
 --seesr_model_path preset/models/seesr \
 --ram_ft_path preset/models/DAPE.pth \
---image_path preset/datasets/test_datasets/DIV2K/test_LR \
---output_dir preset/datasets/output/DIV2K \
+--image_path preset/datasets/test_datasets/RealSR/test_LR \
+--datasets RealSR \
+--recompute_metrics \
+--output_dir preset/datasets/output/RealSR \
 --start_point lr \
 --num_inference_steps 50 \
 --guidance_scale 5.5 \

@@ -228,8 +228,8 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
                             down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
                             mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
                             image_encoder_hidden_states=ram_encoder_hidden_states,
-                            sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                            sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
+                            # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                            # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
                         ).sample
 
                     else:
@@ -237,7 +237,7 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
                         down_block_res_samples, mid_block_res_sample = controlnet(
                             noisy_latents, timesteps, encoder_hidden_states=encoder_hidden_states, controlnet_cond=controlnet_image,
                             return_dict=False, image_encoder_hidden_states=ram_encoder_hidden_states,
-                            sam2_encoder_hidden_states=None, sam2_segmentation_encoder_hidden_states=None,
+                            # sam2_encoder_hidden_states=None, sam2_segmentation_encoder_hidden_states=None,
                         )
                         
                         model_pred = unet(
@@ -245,8 +245,8 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
                             down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
                             mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
                             image_encoder_hidden_states=ram_encoder_hidden_states,
-                            sam2_encoder_hidden_states=None,
-                            sam2_segmentation_encoder_hidden_states=None
+                            # sam2_encoder_hidden_states=None,
+                            # sam2_segmentation_encoder_hidden_states=None
                         ).sample
 
                     if noise_scheduler.config.prediction_type == "epsilon":
@@ -292,7 +292,7 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
         # Restore original training state of the models
         unet.train()
         controlnet.train()
-        logger.info(f"After validation validation: {unet.training=}, {controlnet.training=}\n")
+        logger.info(f"After validation: {unet.training=}, {controlnet.training=}\n")
 
     return val_logs
 
@@ -309,6 +309,7 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
 #         unet=unet,
 #         controlnet=controlnet,
 #         safety_checker=None,
+#         requires_safety_checker=False,
 #         revision=args.revision,
 #         torch_dtype=weight_dtype,
 #     )
@@ -393,7 +394,6 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
 #             logger.warn(f"image logging not implemented for {tracker.name}")
 
 #         return image_logs
-
 
 def import_model_class_from_model_name_or_path(pretrained_model_name_or_path: str, revision: str):
     text_encoder_config = PretrainedConfig.from_pretrained(
@@ -784,9 +784,39 @@ def parse_args(input_args=None):
     parser.add_argument('--trainable_modules', nargs='*', type=str, default=["image_attentions"])
 
     parser.add_argument(
-        "--train_tag_and_dape_attentions",
-        action="store_true",
-        help="Set this flag to make only the text (tag) and image (DAPE) attention modules trainable."
+            "--train_controlnet_tag_attention",
+            action="store_true",
+            help="Set this flag to make the controlnet text (tag) attention modules trainable."
+    )
+
+    parser.add_argument(
+            "--train_controlnet_dape_attention",
+            action="store_true",
+            help="Set this flag to make the controlnet image attention modules trainable."
+    )
+
+    parser.add_argument(
+            "--train_unet_tag_attention",
+            action="store_true",
+            help="Set this flag to make the unet text (tag) attention modules trainable."
+    )
+
+    parser.add_argument(
+            "--train_unet_dape_attention",
+            action="store_true",
+            help="Set this flag to make the unet image attention modules trainable."
+    )
+
+    parser.add_argument(
+            "--train_controlnet_sam2_attention",
+            action="store_true",
+            help="Set this flag to make the controlnet sam2 attention modules trainable."
+    )
+
+    parser.add_argument(
+            "--train_unet_sam2_attention",
+            action="store_true",
+            help="Set this flag to make the unet sam2 attention modules trainable."
     )
 
     parser.add_argument("--seesr_model_path", type=str, default=None)
@@ -928,7 +958,7 @@ if args.unet_model_name_or_path:
     )
 else:
     # resume from pretrained SD
-    logger.info("Loading unet weights from SD")
+    logger.info("Loading unet weights from SeeSR")
 
     unet = UNet2DConditionModel.from_pretrained(args.seesr_model_path, subfolder="unet", use_image_cross_attention=True, device_map=None, low_cpu_mem_usage=False, ignore_mismatched_sizes=True)
     print(f'===== if use ram encoder? {unet.config.use_image_cross_attention}')
@@ -991,12 +1021,26 @@ controlnet.requires_grad_(False)
 unet.train()
 unet.requires_grad_(False)
 
-if args.train_tag_and_dape_attentions:
-    print("--- Making TAG (text) and DAPE (image) attention modules trainable ---")
+# Make ControlNet and UNet modules trainable
+if args.train_controlnet_tag_attention:
     trainable_module_found = False
 
     for name, module in controlnet.named_modules():
-        if name.endswith("attentions") and "sam2" not in name:
+        if name.endswith("attentions") and "image" not in name and "sam2" not in name:
+            for params in module.parameters():
+                params.requires_grad = True
+
+            if not trainable_module_found:
+                print("Found trainable modules in ControlNet:")
+
+            print(f'  - {name}')
+            trainable_module_found = True
+
+if args.train_controlnet_dape_attention:
+    trainable_module_found = False
+
+    for name, module in controlnet.named_modules():
+        if name.endswith("image_attentions") and "sam2" not in name:
             for params in module.parameters():
                 params.requires_grad = True
 
@@ -1005,6 +1049,20 @@ if args.train_tag_and_dape_attentions:
             print(f'  - {name}')
             trainable_module_found = True
 
+if args.train_unet_tag_attention:
+    trainable_module_found = False
+
+    for name, module in unet.named_modules():
+        if name.endswith("attentions") and "image" not in name and "sam2" not in name:
+            for params in module.parameters():
+                params.requires_grad = True
+
+            if not trainable_module_found:
+                print("Found trainable modules in UNet:")   
+            print(f'  - {name}')
+            trainable_module_found = True
+
+if args.train_unet_dape_attention:
     trainable_module_found = False
 
     for name, module in unet.named_modules():
@@ -1016,23 +1074,83 @@ if args.train_tag_and_dape_attentions:
                 print("Found trainable modules in UNet:")
             print(f'  - {name}')
             trainable_module_found = True
-    print("-" * 60)
 
-else:
-    print("--- Making only SAM2 attention modules trainable ---")
-    # This is your original logic for training SAM2 modules
+if args.train_controlnet_sam2_attention:
     for name, module in controlnet.named_modules():
         if "sam2" in name:
             print(f'{name} in <controlnet> will be optimized.' )
             for params in module.parameters():
                 params.requires_grad = True
 
+if args.train_unet_sam2_attention:
     for name, module in unet.named_modules():
         if "sam2" in name:
             print(f'{name} in <unet> will be optimized.' )
             for params in module.parameters():
                 params.requires_grad = True
-    print("-" * 60)
+
+# if args.train_tag_and_dape_attentions:
+#     print("--- Making TAG (text) and DAPE (image) attention modules trainable ---")
+#     # trainable_module_found = False
+
+#     # for name, module in controlnet.named_modules():
+#     #     if name.endswith("attentions") and "sam2" not in name:
+#     #         for params in module.parameters():
+#     #             params.requires_grad = True
+
+#     #         if not trainable_module_found:
+#     #             print("Found trainable modules in ControlNet:")
+#     #         print(f'  - {name}')
+#     #         trainable_module_found = True
+
+#     trainable_module_found = False
+
+#     for name, module in controlnet.named_modules():
+#         if name.endswith("image_attentions") and "sam2" not in name:
+#             for params in module.parameters():
+#                 params.requires_grad = True
+
+#             if not trainable_module_found:
+#                 print("Found trainable modules in UNet:")
+#             print(f'  - {name}')
+#             trainable_module_found = True
+
+#     trainable_module_found = False
+
+#     for name, module in unet.named_modules():
+#         if name.endswith("image_attentions") and "sam2" not in name:
+#             for params in module.parameters():
+#                 params.requires_grad = True
+
+#             if not trainable_module_found:
+#                 print("Found trainable modules in UNet:")
+#             print(f'  - {name}')
+#             trainable_module_found = True
+
+#     # print("--- Making custom merge_conv layers trainable ---")
+#     # for model in [controlnet, unet]:
+#     #     for name, module in model.named_modules():
+#     #         if isinstance(module, torch.nn.Conv2d) and name.endswith('merge_conv'):
+#     #             for params in module.parameters():
+#     #                 params.requires_grad = True
+#     #             print(f"Set {name} in <{model.__class__.__name__}> to be trainable.")
+#     print("-" * 60)
+
+# else:
+#     print("--- Making only SAM2 attention modules trainable ---")
+#     # This is your original logic for training SAM2 modules
+#     for name, module in controlnet.named_modules():
+#         if "sam2" in name:
+#             print(f'{name} in <controlnet> will be optimized.' )
+#             for params in module.parameters():
+#                 params.requires_grad = True
+
+#     for name, module in unet.named_modules():
+#         if "sam2" in name:
+#             print(f'{name} in <unet> will be optimized.' )
+#             for params in module.parameters():
+#                 params.requires_grad = True
+#     print("-" * 60)
 
 if args.enable_xformers_memory_efficient_attention:
     if is_xformers_available():
@@ -1178,6 +1296,7 @@ else:
 
 # For mixed precision training we cast the text_encoder and vae weights to half-precision
 # as these models are only used for inference, keeping weights in full precision is not required.
+
 weight_dtype = torch.float32
 if accelerator.mixed_precision == "fp16":
     weight_dtype = torch.float16
@@ -1307,8 +1426,8 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 controlnet_cond=controlnet_image,
                 return_dict=False,
                 image_encoder_hidden_states=ram_encoder_hidden_states,
-                sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
             )
 
             # Predict the noise residual -> UNet
@@ -1322,8 +1441,8 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 ],
                 mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
                 image_encoder_hidden_states=ram_encoder_hidden_states,
-                sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
+                # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
             ).sample
 
             ######################################################################################################
