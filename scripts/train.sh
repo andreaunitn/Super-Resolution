@@ -4,10 +4,10 @@
 PRETRAINED_MODEL_PATH="preset/models/stable-diffusion-2-base"
 SEESR_MODEL_PATH="preset/models/seesr"
 TINY_VAE_PATH="preset/models/tiny_vae"
-OUTPUT_DIR="preset/train_output/LSDIR"
+OUTPUT_DIR="preset/train_output/LSDIR/"
 ROOT_FOLDERS="preset/datasets/train_datasets/LSDIR"
 RAM_FT_PATH="preset/models/DAPE.pth"
-VALIDATION_PATH="preset/datasets/test_datasets/RealSR/test_LR"
+VALIDATION_PATH="preset/datasets/test_datasets/RealSR/test_LR/Canon_001_LR4.png"
 
 # Hyperparameters
 LEARNING_RATE=5e-6
@@ -21,8 +21,9 @@ DATALOADER_WORKERS=0
 CUDA_DEVICES="0"
 SAM_LOSS_WEIGHT=1
 LR_WARMUP_STEPS=500
-LR_SCHEDULER="constant"
-VALIDATION_STEPS=200
+LR_SCHEDULER="constant_with_warmup"
+VALIDATION_STEPS=250
+VALIDATION_PROMPT=""
 
 export PYTHONWARNINGS="ignore"
 export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
@@ -36,13 +37,14 @@ do
     accelerate launch train.py \
       --pretrained_model_name_or_path="$PRETRAINED_MODEL_PATH" \
       --controlnet_model_name_or_path="$SEESR_MODEL_PATH" \
+      --unet_model_name_or_path="$SEESR_MODEL_PATH" \
       --seesr_model_path="$SEESR_MODEL_PATH" \
       --tiny_vae_path="$TINY_VAE_PATH" \
       --output_dir="$OUTPUT_DIR" \
       --root_folders="$ROOT_FOLDERS" \
       --ram_ft_path="$RAM_FT_PATH" \
       --enable_xformers_memory_efficient_attention \
-      --mixed_precision="fp16" \
+      --mixed_precision="bf16" \
       --resolution=$RESOLUTION \
       --learning_rate=$LEARNING_RATE \
       --train_batch_size=$TRAIN_BATCH_SIZE \
@@ -53,16 +55,19 @@ do
       --checkpointing_steps=$CHECKPOINTING_STEPS \
       --gradient_checkpointing \
       --use_8bit_adam \
-      --set_grads_to_none \
       --allow_tf32 \
       --lr_warmup_steps=$LR_WARMUP_STEPS \
       --lr_scheduler=$LR_SCHEDULER \
       --validation_steps=$VALIDATION_STEPS \
+      --validation_image="$VALIDATION_PATH" \
+      --validation_prompt="$VALIDATION_PROMPT" \
       --resume_from_checkpoint="latest" \
-      --train_controlnet_tag_attention \
       --train_controlnet_dape_attention \
-      --train_unet_tag_attention \
+      --train_controlnet_tag_attention \
+      --train_controlnet_fusion_conv \
       --train_unet_dape_attention \
+      --train_unet_tag_attention \
+      --train_unet_fusion_conv \
 
     EXIT_CODE=$?
     if [ $EXIT_CODE -eq 0 ]; then

@@ -567,7 +567,9 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         attention_type="default",
         use_image_cross_attention=False,
         image_cross_attention_dim=512,
+        use_sam2=False,
         seg_cross_attention_dim=256,
+        use_fusion_conv=True,
     ):
         super().__init__()
 
@@ -596,6 +598,9 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         self.use_image_cross_attention = use_image_cross_attention
         if self.use_image_cross_attention:
             image_attentions = []
+
+        self.use_sam2 = use_sam2
+        if self.use_sam2:
             sam2_image_attentions = []
             sam2_segmentation_attentions = []
 
@@ -656,33 +661,34 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     )
                 )
 
-                # sam2_image_attentions.append(
-                #     Transformer2DModel(
-                #         num_attention_heads,
-                #         in_channels // num_attention_heads,
-                #         in_channels=in_channels,
-                #         num_layers=transformer_layers_per_block,
-                #         cross_attention_dim=seg_cross_attention_dim,
-                #         norm_num_groups=resnet_groups,
-                #         use_linear_projection=use_linear_projection,
-                #         upcast_attention=upcast_attention,
-                #         attention_type=attention_type,
-                #     )
-                # )
+            if self.use_sam2:
+                sam2_image_attentions.append(
+                    Transformer2DModel(
+                        num_attention_heads,
+                        in_channels // num_attention_heads,
+                        in_channels=in_channels,
+                        num_layers=transformer_layers_per_block,
+                        cross_attention_dim=seg_cross_attention_dim,
+                        norm_num_groups=resnet_groups,
+                        use_linear_projection=use_linear_projection,
+                        upcast_attention=upcast_attention,
+                        attention_type=attention_type,
+                    )
+                )
 
-                # sam2_segmentation_attentions.append(
-                #     Transformer2DModel(
-                #         num_attention_heads,
-                #         in_channels // num_attention_heads,
-                #         in_channels=in_channels,
-                #         num_layers=transformer_layers_per_block,
-                #         cross_attention_dim=seg_cross_attention_dim,
-                #         norm_num_groups=resnet_groups,
-                #         use_linear_projection=use_linear_projection,
-                #         upcast_attention=upcast_attention,
-                #         attention_type=attention_type,
-                #     )
-                # )
+                sam2_segmentation_attentions.append(
+                    Transformer2DModel(
+                        num_attention_heads,
+                        in_channels // num_attention_heads,
+                        in_channels=in_channels,
+                        num_layers=transformer_layers_per_block,
+                        cross_attention_dim=seg_cross_attention_dim,
+                        norm_num_groups=resnet_groups,
+                        use_linear_projection=use_linear_projection,
+                        upcast_attention=upcast_attention,
+                        attention_type=attention_type,
+                    )
+                )
                 
         # TCA modules
         self.attentions = nn.ModuleList(attentions)
@@ -692,18 +698,43 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         # RCA modules
         if self.use_image_cross_attention:
             self.image_attentions = nn.ModuleList(image_attentions)
-            # self.sam2_image_attentions = nn.ModuleList(sam2_image_attentions)
-            # self.sam2_segmentation_attentions = nn.ModuleList(sam2_segmentation_attentions)
+
+        if self.use_sam2:
+            self.sam2_image_attentions = nn.ModuleList(sam2_image_attentions)
+            self.sam2_segmentation_attentions = nn.ModuleList(sam2_segmentation_attentions)
 
         self.gradient_checkpointing = False
 
-        # self.merge_conv = nn.Conv2d(
-        #     in_channels=in_channels * 2,
-        #     out_channels=in_channels,
-        #     kernel_size=3,
-        #     padding=1,
-        #     bias=True
-        # )
+        self.use_fusion_conv = use_fusion_conv
+
+        if self.use_fusion_conv:
+            self.fusion_conv = nn.Conv2d(
+                in_channels=in_channels * 2,
+                out_channels=in_channels,
+                kernel_size=3,
+                padding=1,
+                stride=1,
+                bias=True
+            )
+
+            with torch.no_grad():
+                self.fusion_conv.weight.zero_()
+                self.fusion_conv.bias.zero_()
+
+        # with torch.no_grad():
+        #     # 1. Set all weights and the bias to zero (a clean slate)
+        #     self.fusion_conv.weight.zero_()
+        #     self.fusion_conv.bias.zero_()
+
+        #     # 2. Get the number of channels for each branch (e.g., 320)
+        #     out_channels = self.fusion_conv.out_channels
+
+        #     # 3. For each output channel, set the weights to perform the average.
+        #     for i in range(out_channels):
+        #         # For the i-th output channel, take the i-th channel from branch A and multiply by 0.5
+        #         self.fusion_conv.weight[i, i, 1, 1] = 0.5
+        #         # Also take the i-th channel from branch B (which is at index i + C) and multiply by 0.5
+        #         self.fusion_conv.weight[i, i + out_channels, 1, 1] = 0.5
 
     def forward(
         self,
@@ -723,7 +754,6 @@ class UNetMidBlock2DCrossAttn(nn.Module):
 
                 if self.gradient_checkpointing:
             
-                    # Checkpoint the ResNet part
                     def create_custom_forward(module):
                         def custom_forward(*inputs):
                             return module(*inputs)
@@ -759,18 +789,18 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                         #                                                 attention_mask=attention_mask, 
                         #                                                 encoder_attention_mask=encoder_attention_mask, 
                         #                                                 return_dict=False)[0]
+                        
+                        if self.use_fusion_conv:
+                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                            hidden_states = self.fusion_conv(concat_hidden_states)
 
-                        # all_hidden_states = [tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states]
-                        # concatenated_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
-                        # merged_hidden_states = self.merge_conv(concatenated_hidden_states)
-
-                        all_hidden_states = [tag_hidden_states, dape_hidden_states]
-                        avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
-                        hidden_states = avg_hidden_states
+                        else:
+                            all_hidden_states = [tag_hidden_states, dape_hidden_states]
+                            avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
+                            hidden_states = avg_hidden_states
 
                         return hidden_states
 
-                    # Checkpoint the attention function
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         custom_attention_forward,
                         hidden_states,
@@ -779,12 +809,11 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                         use_reentrant=False
                     )
                     
-                    # Checkpoint the second ResNet
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(resnet), hidden_states, temb, use_reentrant=False
                     )
 
-                else: # If not using gradient checkpointing
+                else:
                         
                     tag_hidden_states = attn(hidden_states, 
                                                 encoder_hidden_states=encoder_hidden_states, 
@@ -815,15 +844,15 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     #                                                 encoder_attention_mask=encoder_attention_mask, 
                     #                                                 return_dict=False)[0]
 
-                    # all_hidden_states = [tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states]
-                    # concatenated_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
-                    # merged_hidden_states = self.merge_conv(concatenated_hidden_states)
+                    if self.use_fusion_conv:
+                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                        hidden_states = self.fusion_conv(concat_hidden_states)
+                    
+                    else:
+                        all_hidden_states = [tag_hidden_states, dape_hidden_states]
+                        avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
+                        hidden_states = avg_hidden_states
 
-                    all_hidden_states = [tag_hidden_states, dape_hidden_states]
-                    avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
-                    hidden_states = avg_hidden_states
-
-                    # ResNet
                     hidden_states = resnet(hidden_states, temb)
 
         else:
@@ -1137,7 +1166,9 @@ class CrossAttnDownBlock2D(nn.Module):
         attention_type="default",
         use_image_cross_attention=False,
         image_cross_attention_dim=512,
+        use_sam2=False,
         seg_cross_attention_dim=256,
+        use_fusion_conv=True,
     ):
         super().__init__()
         resnets = []
@@ -1147,9 +1178,11 @@ class CrossAttnDownBlock2D(nn.Module):
         self.use_image_cross_attention = use_image_cross_attention
         if self.use_image_cross_attention:
             image_attentions = []
+
+        self.use_sam2 = use_sam2
+        if self.use_sam2:
             sam2_image_attentions = []
             sam2_segmentation_attentions = []
-
 
         self.has_cross_attention = True
         self.num_attention_heads = num_attention_heads
@@ -1214,35 +1247,36 @@ class CrossAttnDownBlock2D(nn.Module):
                     )
                 )
 
-                # sam2_image_attentions.append(
-                #     Transformer2DModel(
-                #         num_attention_heads,
-                #         out_channels // num_attention_heads,
-                #         in_channels=out_channels,
-                #         num_layers=transformer_layers_per_block,
-                #         cross_attention_dim=seg_cross_attention_dim,
-                #         norm_num_groups=resnet_groups,
-                #         use_linear_projection=use_linear_projection,
-                #         only_cross_attention=only_cross_attention,
-                #         upcast_attention=upcast_attention,
-                #         attention_type=attention_type,
-                #     )
-                # )
+            if self.use_sam2:
+                sam2_image_attentions.append(
+                    Transformer2DModel(
+                        num_attention_heads,
+                        out_channels // num_attention_heads,
+                        in_channels=out_channels,
+                        num_layers=transformer_layers_per_block,
+                        cross_attention_dim=seg_cross_attention_dim,
+                        norm_num_groups=resnet_groups,
+                        use_linear_projection=use_linear_projection,
+                        only_cross_attention=only_cross_attention,
+                        upcast_attention=upcast_attention,
+                        attention_type=attention_type,
+                    )
+                )
 
-                # sam2_segmentation_attentions.append(
-                #     Transformer2DModel(
-                #         num_attention_heads,
-                #         out_channels // num_attention_heads,
-                #         in_channels=out_channels,
-                #         num_layers=transformer_layers_per_block,
-                #         cross_attention_dim=seg_cross_attention_dim,
-                #         norm_num_groups=resnet_groups,
-                #         use_linear_projection=use_linear_projection,
-                #         only_cross_attention=only_cross_attention,
-                #         upcast_attention=upcast_attention,
-                #         attention_type=attention_type,
-                #     )
-                # )
+                sam2_segmentation_attentions.append(
+                    Transformer2DModel(
+                        num_attention_heads,
+                        out_channels // num_attention_heads,
+                        in_channels=out_channels,
+                        num_layers=transformer_layers_per_block,
+                        cross_attention_dim=seg_cross_attention_dim,
+                        norm_num_groups=resnet_groups,
+                        use_linear_projection=use_linear_projection,
+                        only_cross_attention=only_cross_attention,
+                        upcast_attention=upcast_attention,
+                        attention_type=attention_type,
+                    )
+                )
 
         # TCA modules
         self.attentions = nn.ModuleList(attentions)
@@ -1252,8 +1286,10 @@ class CrossAttnDownBlock2D(nn.Module):
         # RCA modules
         if self.use_image_cross_attention:
             self.image_attentions = nn.ModuleList(image_attentions)
-            # self.sam2_image_attentions = nn.ModuleList(sam2_image_attentions)   
-            # self.sam2_segmentation_attentions = nn.ModuleList(sam2_segmentation_attentions)
+
+        if self.use_sam2:
+            self.sam2_image_attentions = nn.ModuleList(sam2_image_attentions)   
+            self.sam2_segmentation_attentions = nn.ModuleList(sam2_segmentation_attentions)
 
         if add_downsample:
             self.downsamplers = nn.ModuleList(
@@ -1268,13 +1304,36 @@ class CrossAttnDownBlock2D(nn.Module):
 
         self.gradient_checkpointing = False
 
-        # self.merge_conv = nn.Conv2d(
-        #     in_channels=out_channels * 2,
-        #     out_channels=out_channels,
-        #     kernel_size=3,
-        #     padding=1,
-        #     bias=True
-        # )
+        self.use_fusion_conv = use_fusion_conv
+
+        if self.use_fusion_conv:
+            self.fusion_conv = nn.Conv2d(
+                in_channels=out_channels * 2,
+                out_channels=out_channels,
+                kernel_size=3,
+                padding=1,
+                stride=1,
+                bias=True
+            )
+            
+            with torch.no_grad():
+                self.fusion_conv.weight.zero_()
+                self.fusion_conv.bias.zero_()
+
+        # with torch.no_grad():
+        #     # 1. Set all weights and the bias to zero (a clean slate)
+        #     self.fusion_conv.weight.zero_()
+        #     self.fusion_conv.bias.zero_()
+
+        #     # 2. Get the number of channels for each branch (e.g., 320)
+        #     out_channels = self.fusion_conv.out_channels
+
+        #     # 3. For each output channel, set the weights to perform the average.
+        #     for i in range(out_channels):
+        #         # For the i-th output channel, take the i-th channel from branch A and multiply by 0.5
+        #         self.fusion_conv.weight[i, i, 1, 1] = 0.5
+        #         # Also take the i-th channel from branch B (which is at index i + C) and multiply by 0.5
+        #         self.fusion_conv.weight[i, i + out_channels, 1, 1] = 0.5
 
     def forward(
         self,
@@ -1334,13 +1393,14 @@ class CrossAttnDownBlock2D(nn.Module):
                         #                                                 encoder_attention_mask=encoder_attention_mask, 
                         #                                                 return_dict=False)[0]
 
-                        # all_hidden_states = [tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states]
-                        # concatenated_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
-                        # merged_hidden_states = self.merge_conv(concatenated_hidden_states)
-
-                        all_hidden_states = [tag_hidden_states, dape_hidden_states]
-                        avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
-                        hidden_states = avg_hidden_states
+                        if self.use_fusion_conv:
+                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                            hidden_states = self.fusion_conv(concat_hidden_states)
+                        
+                        else:
+                            all_hidden_states = [tag_hidden_states, dape_hidden_states]
+                            avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
+                            hidden_states = avg_hidden_states
 
                         return hidden_states
 
@@ -1352,7 +1412,7 @@ class CrossAttnDownBlock2D(nn.Module):
                         use_reentrant=False
                     )
 
-                else: # If not using gradient checkpointing 
+                else:
 
                     hidden_states = resnet(hidden_states, temb)
                     
@@ -1385,15 +1445,14 @@ class CrossAttnDownBlock2D(nn.Module):
                     #                                                 encoder_attention_mask=encoder_attention_mask, 
                     #                                                 return_dict=False)[0]
 
-                    # all_hidden_states = [tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states]
-                    # hidden_states = tag_hidden_states + dape_hidden_states
-
-                    # concatenated_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
-                    # hidden_states = self.merge_conv(concatenated_hidden_states)
-
-                    all_hidden_states = [tag_hidden_states, dape_hidden_states]
-                    avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
-                    hidden_states = avg_hidden_states
+                    if self.use_fusion_conv:
+                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                        hidden_states = self.fusion_conv(concat_hidden_states)
+                    
+                    else:
+                        all_hidden_states = [tag_hidden_states, dape_hidden_states]
+                        avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
+                        hidden_states = avg_hidden_states
                 
                 # apply additional residuals to the output of the last pair of resnet and attention blocks
                 if i == len(blocks) - 1 and additional_residuals is not None:
@@ -2468,7 +2527,9 @@ class CrossAttnUpBlock2D(nn.Module):
         attention_type="default",
         use_image_cross_attention=False,
         image_cross_attention_dim=512,
+        use_sam2=False,
         seg_cross_attention_dim=256,
+        use_fusion_conv=True,
     ):
         super().__init__()
         resnets = []
@@ -2478,6 +2539,9 @@ class CrossAttnUpBlock2D(nn.Module):
         self.use_image_cross_attention = use_image_cross_attention
         if self.use_image_cross_attention:
             image_attentions = []
+
+        self.use_sam2 = use_sam2
+        if self.use_sam2:
             sam2_image_attentions = []
             sam2_segmentation_attentions = []
 
@@ -2546,35 +2610,36 @@ class CrossAttnUpBlock2D(nn.Module):
                     )
                 )
 
-                # sam2_image_attentions.append(
-                #     Transformer2DModel(
-                #         num_attention_heads,
-                #         out_channels // num_attention_heads,
-                #         in_channels=out_channels,
-                #         num_layers=transformer_layers_per_block,
-                #         cross_attention_dim=seg_cross_attention_dim,
-                #         norm_num_groups=resnet_groups,
-                #         use_linear_projection=use_linear_projection,
-                #         only_cross_attention=only_cross_attention,
-                #         upcast_attention=upcast_attention,
-                #         attention_type=attention_type,
-                #     )
-                # )
+            if self.use_sam2:
+                sam2_image_attentions.append(
+                    Transformer2DModel(
+                        num_attention_heads,
+                        out_channels // num_attention_heads,
+                        in_channels=out_channels,
+                        num_layers=transformer_layers_per_block,
+                        cross_attention_dim=seg_cross_attention_dim,
+                        norm_num_groups=resnet_groups,
+                        use_linear_projection=use_linear_projection,
+                        only_cross_attention=only_cross_attention,
+                        upcast_attention=upcast_attention,
+                        attention_type=attention_type,
+                    )
+                )
 
-                # sam2_segmentation_attentions.append(
-                #     Transformer2DModel(
-                #         num_attention_heads,
-                #         out_channels // num_attention_heads,
-                #         in_channels=out_channels,
-                #         num_layers=transformer_layers_per_block,
-                #         cross_attention_dim=seg_cross_attention_dim,
-                #         norm_num_groups=resnet_groups,
-                #         use_linear_projection=use_linear_projection,
-                #         only_cross_attention=only_cross_attention,
-                #         upcast_attention=upcast_attention,
-                #         attention_type=attention_type,
-                #     )
-                # )
+                sam2_segmentation_attentions.append(
+                    Transformer2DModel(
+                        num_attention_heads,
+                        out_channels // num_attention_heads,
+                        in_channels=out_channels,
+                        num_layers=transformer_layers_per_block,
+                        cross_attention_dim=seg_cross_attention_dim,
+                        norm_num_groups=resnet_groups,
+                        use_linear_projection=use_linear_projection,
+                        only_cross_attention=only_cross_attention,
+                        upcast_attention=upcast_attention,
+                        attention_type=attention_type,
+                    )
+                )
 
         # TCA modules
         self.attentions = nn.ModuleList(attentions)
@@ -2584,8 +2649,10 @@ class CrossAttnUpBlock2D(nn.Module):
         # RCA modules
         if self.use_image_cross_attention:
             self.image_attentions = nn.ModuleList(image_attentions)
-            # self.sam2_image_attentions = nn.ModuleList(sam2_image_attentions)
-            # self.sam2_segmentation_attentions = nn.ModuleList(sam2_segmentation_attentions)
+
+        if self.use_sam2:
+            self.sam2_image_attentions = nn.ModuleList(sam2_image_attentions)
+            self.sam2_segmentation_attentions = nn.ModuleList(sam2_segmentation_attentions)
 
         if add_upsample:
             self.upsamplers = nn.ModuleList([Upsample2D(out_channels, use_conv=True, out_channels=out_channels)])
@@ -2594,13 +2661,35 @@ class CrossAttnUpBlock2D(nn.Module):
 
         self.gradient_checkpointing = False
 
-        # self.merge_conv = nn.Conv2d(
-        #     in_channels=out_channels * 2,
-        #     out_channels=out_channels,
-        #     kernel_size=3,
-        #     padding=1,
-        #     bias=True
-        # )
+        self.use_fusion_conv = use_fusion_conv
+
+        if self.use_fusion_conv:
+            self.fusion_conv = nn.Conv2d(
+                in_channels=out_channels * 2,
+                out_channels=out_channels,
+                kernel_size=3,
+                padding=1,
+                stride=1,
+                bias=True
+            )
+
+            with torch.no_grad():
+                self.fusion_conv.weight.zero_()
+                self.fusion_conv.bias.zero_()
+
+        # with torch.no_grad():
+        #     self.fusion_conv.weight.zero_()
+        #     self.fusion_conv.bias.zero_()
+
+        #     # 2. Get the number of channels for each branch (e.g., 320)
+        #     out_channels = self.fusion_conv.out_channels
+
+        #     # 3. For each output channel, set the weights to perform the average.
+        #     for i in range(out_channels):
+        #         # For the i-th output channel, take the i-th channel from branch A and multiply by 0.5
+        #         self.fusion_conv.weight[i, i, 1, 1] = 0.5
+        #         # Also take the i-th channel from branch B (which is at index i + C) and multiply by 0.5
+        #         self.fusion_conv.weight[i, i + out_channels, 1, 1] = 0.5
 
     def forward(
         self,
@@ -2668,9 +2757,14 @@ class CrossAttnUpBlock2D(nn.Module):
                         # concatenated_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                         # merged_hidden_states = self.merge_conv(concatenated_hidden_states)
 
-                        all_hidden_states = [tag_hidden_states, dape_hidden_states]
-                        avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
-                        hidden_states = avg_hidden_states
+                        if self.use_fusion_conv:
+                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                            hidden_states = self.fusion_conv(concat_hidden_states)
+                        
+                        else:
+                            all_hidden_states = [tag_hidden_states, dape_hidden_states]
+                            avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
+                            hidden_states = avg_hidden_states
 
                         return hidden_states
 
@@ -2682,7 +2776,8 @@ class CrossAttnUpBlock2D(nn.Module):
                         use_reentrant=False
                     )
 
-                else: # If not using gradient checkpointing
+                else:
+
                     hidden_states = resnet(hidden_states, temb)
                     
                     tag_hidden_states = attn(hidden_states, 
@@ -2714,15 +2809,14 @@ class CrossAttnUpBlock2D(nn.Module):
                     #                                                 encoder_attention_mask=encoder_attention_mask, 
                     #                                                 return_dict=False)[0]
                     
-                    # all_hidden_states = [tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states]
-                    # hidden_states = tag_hidden_states + dape_hidden_states
-
-                    # concatenated_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
-                    # hidden_states = self.merge_conv(concatenated_hidden_states)
-
-                    all_hidden_states = [tag_hidden_states, dape_hidden_states]
-                    avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
-                    hidden_states = avg_hidden_states
+                    if self.use_fusion_conv:
+                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                        hidden_states = self.fusion_conv(concat_hidden_states)
+                    
+                    else:
+                        all_hidden_states = [tag_hidden_states, dape_hidden_states]
+                        avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
+                        hidden_states = avg_hidden_states
                     
         else:
             for resnet, attn in zip(self.resnets, self.attentions):

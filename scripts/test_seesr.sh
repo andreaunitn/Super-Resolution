@@ -1,12 +1,11 @@
 python -W ignore test_seesr.py \
 --pretrained_model_path preset/models/stable-diffusion-2-base \
---prompt None \
---seesr_model_path preset/train_output/LSDIR/test_10_correct_model_tag_and_dape_trainable/checkpoint-500 \
+--prompt '' \
+--seesr_model_path preset/train_output/LSDIR/checkpoint-2500 \
 --ram_ft_path preset/models/DAPE.pth \
 --image_path preset/datasets/test_datasets/RealSR/test_LR \
 --datasets RealSR \
 --recompute_metrics \
---only_metrics \
 --output_dir preset/datasets/output/RealSR \
 --start_point lr \
 --num_inference_steps 50 \
