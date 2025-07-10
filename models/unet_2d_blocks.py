@@ -569,13 +569,16 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         image_cross_attention_dim=512,
         use_sam2=False,
         seg_cross_attention_dim=256,
-        use_fusion_conv=True,
+        use_fusion_conv=False,
+        use_fusion_sum=True,
     ):
         super().__init__()
 
         self.has_cross_attention = True
         self.num_attention_heads = num_attention_heads
         resnet_groups = resnet_groups if resnet_groups is not None else min(in_channels // 4, 32)
+
+        self.use_fusion_sum = use_fusion_sum
 
         # there is always at least one resnet
         resnets = [
@@ -719,22 +722,14 @@ class UNetMidBlock2DCrossAttn(nn.Module):
 
             with torch.no_grad():
                 self.fusion_conv.weight.zero_()
-                self.fusion_conv.bias.zero_()
+                if self.fusion_conv.bias is not None:
+                    self.fusion_conv.bias.zero_()
 
-        # with torch.no_grad():
-        #     # 1. Set all weights and the bias to zero (a clean slate)
-        #     self.fusion_conv.weight.zero_()
-        #     self.fusion_conv.bias.zero_()
-
-        #     # 2. Get the number of channels for each branch (e.g., 320)
-        #     out_channels = self.fusion_conv.out_channels
-
-        #     # 3. For each output channel, set the weights to perform the average.
-        #     for i in range(out_channels):
-        #         # For the i-th output channel, take the i-th channel from branch A and multiply by 0.5
-        #         self.fusion_conv.weight[i, i, 1, 1] = 0.5
-        #         # Also take the i-th channel from branch B (which is at index i + C) and multiply by 0.5
-        #         self.fusion_conv.weight[i, i + out_channels, 1, 1] = 0.5
+                out_ch = self.fusion_conv.out_channels
+                
+                for i in range(out_ch):
+                    self.fusion_conv.weight[i, i, 1, 1] = 0.5
+                    self.fusion_conv.weight[i, i + out_ch, 1, 1] = 0.5
 
     def forward(
         self,
@@ -794,6 +789,9 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                             concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                             hidden_states = self.fusion_conv(concat_hidden_states)
 
+                        elif self.use_fusion_sum:
+                            hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
+
                         else:
                             all_hidden_states = [tag_hidden_states, dape_hidden_states]
                             avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
@@ -848,6 +846,9 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                         concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                         hidden_states = self.fusion_conv(concat_hidden_states)
                     
+                    elif self.use_fusion_sum:
+                        hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
+
                     else:
                         all_hidden_states = [tag_hidden_states, dape_hidden_states]
                         avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
@@ -1168,11 +1169,14 @@ class CrossAttnDownBlock2D(nn.Module):
         image_cross_attention_dim=512,
         use_sam2=False,
         seg_cross_attention_dim=256,
-        use_fusion_conv=True,
+        use_fusion_conv=False,
+        use_fusion_sum=True,
     ):
         super().__init__()
         resnets = []
         attentions = []
+
+        self.use_fusion_sum = use_fusion_sum
 
         ## for image cross attention
         self.use_image_cross_attention = use_image_cross_attention
@@ -1318,22 +1322,14 @@ class CrossAttnDownBlock2D(nn.Module):
             
             with torch.no_grad():
                 self.fusion_conv.weight.zero_()
-                self.fusion_conv.bias.zero_()
+                if self.fusion_conv.bias is not None:
+                    self.fusion_conv.bias.zero_()
 
-        # with torch.no_grad():
-        #     # 1. Set all weights and the bias to zero (a clean slate)
-        #     self.fusion_conv.weight.zero_()
-        #     self.fusion_conv.bias.zero_()
-
-        #     # 2. Get the number of channels for each branch (e.g., 320)
-        #     out_channels = self.fusion_conv.out_channels
-
-        #     # 3. For each output channel, set the weights to perform the average.
-        #     for i in range(out_channels):
-        #         # For the i-th output channel, take the i-th channel from branch A and multiply by 0.5
-        #         self.fusion_conv.weight[i, i, 1, 1] = 0.5
-        #         # Also take the i-th channel from branch B (which is at index i + C) and multiply by 0.5
-        #         self.fusion_conv.weight[i, i + out_channels, 1, 1] = 0.5
+                out_ch = self.fusion_conv.out_channels
+                
+                for i in range(out_ch):
+                    self.fusion_conv.weight[i, i, 1, 1] = 0.5
+                    self.fusion_conv.weight[i, i + out_ch, 1, 1] = 0.5
 
     def forward(
         self,
@@ -1397,6 +1393,9 @@ class CrossAttnDownBlock2D(nn.Module):
                             concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                             hidden_states = self.fusion_conv(concat_hidden_states)
                         
+                        elif self.use_fusion_sum:
+                            hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
+
                         else:
                             all_hidden_states = [tag_hidden_states, dape_hidden_states]
                             avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
@@ -1448,7 +1447,10 @@ class CrossAttnDownBlock2D(nn.Module):
                     if self.use_fusion_conv:
                         concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                         hidden_states = self.fusion_conv(concat_hidden_states)
-                    
+
+                    elif self.use_fusion_sum:
+                        hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
+
                     else:
                         all_hidden_states = [tag_hidden_states, dape_hidden_states]
                         avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
@@ -2529,11 +2531,14 @@ class CrossAttnUpBlock2D(nn.Module):
         image_cross_attention_dim=512,
         use_sam2=False,
         seg_cross_attention_dim=256,
-        use_fusion_conv=True,
+        use_fusion_conv=False,
+        use_fusion_sum=True,
     ):
         super().__init__()
         resnets = []
         attentions = []
+        
+        self.use_fusion_sum = use_fusion_sum
 
         ## for image cross attention
         self.use_image_cross_attention = use_image_cross_attention
@@ -2675,21 +2680,14 @@ class CrossAttnUpBlock2D(nn.Module):
 
             with torch.no_grad():
                 self.fusion_conv.weight.zero_()
-                self.fusion_conv.bias.zero_()
+                if self.fusion_conv.bias is not None:
+                    self.fusion_conv.bias.zero_()
 
-        # with torch.no_grad():
-        #     self.fusion_conv.weight.zero_()
-        #     self.fusion_conv.bias.zero_()
-
-        #     # 2. Get the number of channels for each branch (e.g., 320)
-        #     out_channels = self.fusion_conv.out_channels
-
-        #     # 3. For each output channel, set the weights to perform the average.
-        #     for i in range(out_channels):
-        #         # For the i-th output channel, take the i-th channel from branch A and multiply by 0.5
-        #         self.fusion_conv.weight[i, i, 1, 1] = 0.5
-        #         # Also take the i-th channel from branch B (which is at index i + C) and multiply by 0.5
-        #         self.fusion_conv.weight[i, i + out_channels, 1, 1] = 0.5
+                out_ch = self.fusion_conv.out_channels
+                
+                for i in range(out_ch):
+                    self.fusion_conv.weight[i, i, 1, 1] = 0.5
+                    self.fusion_conv.weight[i, i + out_ch, 1, 1] = 0.5
 
     def forward(
         self,
@@ -2703,7 +2701,7 @@ class CrossAttnUpBlock2D(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         image_encoder_hidden_states: Optional[torch.FloatTensor] = None,
     ):  
-
+        
         if self.use_image_cross_attention:
             for resnet, attn, dape_image_attn in zip(self.resnets, self.attentions, self.image_attentions):
                 # pop res hidden states
@@ -2753,14 +2751,13 @@ class CrossAttnUpBlock2D(nn.Module):
                         #                                                 encoder_attention_mask=encoder_attention_mask, 
                         #                                                 return_dict=False)[0]
 
-                        # all_hidden_states = [tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states]
-                        # concatenated_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
-                        # merged_hidden_states = self.merge_conv(concatenated_hidden_states)
-
                         if self.use_fusion_conv:
                             concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                             hidden_states = self.fusion_conv(concat_hidden_states)
-                        
+
+                        elif self.use_fusion_sum:
+                            hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
+
                         else:
                             all_hidden_states = [tag_hidden_states, dape_hidden_states]
                             avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)
@@ -2812,7 +2809,10 @@ class CrossAttnUpBlock2D(nn.Module):
                     if self.use_fusion_conv:
                         concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                         hidden_states = self.fusion_conv(concat_hidden_states)
-                    
+
+                    elif self.use_fusion_sum:
+                        hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
+
                     else:
                         all_hidden_states = [tag_hidden_states, dape_hidden_states]
                         avg_hidden_states = torch.mean(torch.stack(all_hidden_states, dim=0), dim=0)

@@ -24,6 +24,8 @@ LR_WARMUP_STEPS=500
 LR_SCHEDULER="constant_with_warmup"
 VALIDATION_STEPS=250
 VALIDATION_PROMPT=""
+PRECISION="bf16"
+RESUME_CHECKPOINT="latest"
 
 export PYTHONWARNINGS="ignore"
 export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
@@ -44,7 +46,7 @@ do
       --root_folders="$ROOT_FOLDERS" \
       --ram_ft_path="$RAM_FT_PATH" \
       --enable_xformers_memory_efficient_attention \
-      --mixed_precision="bf16" \
+      --mixed_precision="$PRECISION" \
       --resolution=$RESOLUTION \
       --learning_rate=$LEARNING_RATE \
       --train_batch_size=$TRAIN_BATCH_SIZE \
@@ -61,13 +63,12 @@ do
       --validation_steps=$VALIDATION_STEPS \
       --validation_image="$VALIDATION_PATH" \
       --validation_prompt="$VALIDATION_PROMPT" \
-      --resume_from_checkpoint="latest" \
+      --generate_validation_image \
+      --resume_from_checkpoint="$RESUME_CHECKPOINT" \
       --train_controlnet_dape_attention \
       --train_controlnet_tag_attention \
-      --train_controlnet_fusion_conv \
       --train_unet_dape_attention \
       --train_unet_tag_attention \
-      --train_unet_fusion_conv \
 
     EXIT_CODE=$?
     if [ $EXIT_CODE -eq 0 ]; then

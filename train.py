@@ -38,7 +38,7 @@ from ram import inference_ram as inference
 from models.controlnet import ControlNetModel
 from models.unet_2d_condition import UNet2DConditionModel
 from diffusers.optimization import get_scheduler
-from diffusers.utils import check_min_version, is_wandb_available
+from diffusers.utils import check_min_version
 from diffusers.utils.import_utils import is_xformers_available
 
 from dataloaders.paired_dataset import PairedCaptionDataset
@@ -49,6 +49,8 @@ import torch.nn.functional as F
 from utils_data.sam2_processing import load
 
 from models.unet_2d_blocks import CrossAttnDownBlock2D, CrossAttnUpBlock2D, UNetMidBlock2DCrossAttn
+
+import glob
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.21.0.dev0")
@@ -188,74 +190,74 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
 
     logger.info("Running validation... ")
     logger.info("Generating validation image")
+    if args.generate_validation_image:
+        if accelerator.is_main_process:
+            pipeline = StableDiffusionControlNetPipeline(
+                vae=accelerator.unwrap_model(vae),
+                text_encoder=accelerator.unwrap_model(text_encoder),
+                tokenizer=tokenizer,
+                unet=accelerator.unwrap_model(unet),
+                controlnet=accelerator.unwrap_model(controlnet),
+                scheduler=noise_scheduler,
+                safety_checker=None,
+                feature_extractor=None,
+                requires_safety_checker=None
+            )
 
-    if accelerator.is_main_process:
-        pipeline = StableDiffusionControlNetPipeline(
-            vae=accelerator.unwrap_model(vae),
-            text_encoder=accelerator.unwrap_model(text_encoder),
-            tokenizer=tokenizer,
-            unet=accelerator.unwrap_model(unet),
-            controlnet=accelerator.unwrap_model(controlnet),
-            scheduler=noise_scheduler,
-            safety_checker=None,
-            feature_extractor=None,
-            requires_safety_checker=None
-        )
+            pipeline = pipeline.to(accelerator.device)
+            pipeline.set_progress_bar_config(disable=True)
 
-        pipeline = pipeline.to(accelerator.device)
-        pipeline.set_progress_bar_config(disable=True)
-
-        ram_model = ram(pretrained='preset/models/ram_swin_large_14m.pth',
-                        pretrained_condition=args.ram_ft_path,
-                        image_size=384,
-                        vit='swin_l')
-        
-        ram_model.eval()
-        ram_model.to(accelerator.device)
-
-        if args.validation_image and args.validation_prompt:
-            validation_image_path = args.validation_image[0]
-            validation_image = Image.open(validation_image_path).convert("RGB")
-
-            lq_for_ram = tensor_transforms(validation_image).unsqueeze(0).to(accelerator.device)
-            lq_for_ram = ram_transforms(lq_for_ram)
-            ram_tags = inference(lq_for_ram, ram_model)
-            ram_encoder_hidden_states = ram_model.generate_image_embeds(lq_for_ram)
-
-            final_prompt = f"{ram_tags[0]}, "
-            final_prompt += "clean, high-resolution, 8k,"
-            negative_prompt = "dotted, noise, blur, lowres, smooth"
-
-            width, height = validation_image.size
-            cond_image = validation_image.resize((width*4, height*4))
-
-            generator = torch.Generator(device=accelerator.device).manual_seed(args.seed if args.seed else 42)
-
-            logger.info(f"Generating validation image for step {global_step} with prompt: '{final_prompt}'")
+            ram_model = ram(pretrained='preset/models/ram_swin_large_14m.pth',
+                            pretrained_condition=args.ram_ft_path,
+                            image_size=384,
+                            vit='swin_l')
             
-            with torch.autocast("cuda"):
-                generated_image = pipeline(
-                    prompt=final_prompt,
-                    image=cond_image,
-                    negative_prompt=negative_prompt,
-                    num_inference_steps=50,
-                    generator=generator,
-                    height=height*4,
-                    width=width*4,
-                    guidance_scale=5.5,
-                    ram_encoder_hidden_states=ram_encoder_hidden_states,
-                ).images[0]
+            ram_model.eval()
+            ram_model.to(accelerator.device)
 
-            # Create a directory for validation samples if it doesn't exist
-            val_img_dir = os.path.join(args.output_dir, "validation_samples")
-            os.makedirs(val_img_dir, exist_ok=True)
-            
-            # Save the generated image
-            generated_image.save(os.path.join(val_img_dir, f"step_{global_step}.png"))
-            logger.info(f"Saved validation image to {val_img_dir}/step_{global_step}.png")
+            if args.validation_image and args.validation_prompt:
+                validation_image_path = args.validation_image[0]
+                validation_image = Image.open(validation_image_path).convert("RGB")
 
-        del pipeline
-        torch.cuda.empty_cache()
+                lq_for_ram = tensor_transforms(validation_image).unsqueeze(0).to(accelerator.device)
+                lq_for_ram = ram_transforms(lq_for_ram)
+                ram_tags = inference(lq_for_ram, ram_model)
+                ram_encoder_hidden_states = ram_model.generate_image_embeds(lq_for_ram)
+
+                final_prompt = f"{ram_tags[0]}, "
+                final_prompt += "clean, high-resolution, 8k,"
+                negative_prompt = "dotted, noise, blur, lowres, smooth"
+
+                width, height = validation_image.size
+                cond_image = validation_image.resize((width*4, height*4))
+
+                generator = torch.Generator(device=accelerator.device).manual_seed(args.seed if args.seed else 42)
+
+                logger.info(f"Generating validation image for step {global_step} with prompt: '{final_prompt}'")
+                
+                with torch.autocast("cuda"):
+                    generated_image = pipeline(
+                        prompt=final_prompt,
+                        image=cond_image,
+                        negative_prompt=negative_prompt,
+                        num_inference_steps=50,
+                        generator=generator,
+                        height=height*4,
+                        width=width*4,
+                        guidance_scale=5.5,
+                        ram_encoder_hidden_states=ram_encoder_hidden_states,
+                    ).images[0]
+
+                # Create a directory for validation samples if it doesn't exist
+                val_img_dir = os.path.join(args.output_dir, "validation_samples")
+                os.makedirs(val_img_dir, exist_ok=True)
+                
+                # Save the generated image
+                generated_image.save(os.path.join(val_img_dir, f"step_{global_step}.png"))
+                logger.info(f"Saved validation image to {val_img_dir}/step_{global_step}.png")
+
+            del pipeline
+            torch.cuda.empty_cache()
 
     logger.info(f"Before validation: {unet.training=}, {controlnet.training=}")
     val_logs = {}
@@ -325,8 +327,9 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
                         target = noise
                     else:
                         target = noise_scheduler.get_velocity(latents, noise, timesteps)
-
+                    
                     diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                    # diffusion_loss = F.l1_loss(model_pred.float(), target.float(), reduction="mean")
                     loss = diffusion_loss
 
                     if args.use_sam2:
@@ -894,6 +897,11 @@ def parse_args(input_args=None):
         default=None,
         help="Path to a full checkpoint directory (containing models, optimizer, scheduler) to start finetuning from."
     )
+    parser.add_argument(
+        "--generate_validation_image",
+        action="store_true",
+        help="Wether to generate the image during validation"
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -1020,7 +1028,6 @@ if args.use_sam2:
     sam2_image_encoder = sam2.predictor.model.image_encoder
     sam2_norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
-# TODO: fai test specificando anche la unet
 if args.unet_model_name_or_path:
     # resume from self-train
     logger.info("Loading unet weights from self-train")
@@ -1030,8 +1037,11 @@ if args.unet_model_name_or_path:
         args.unet_model_name_or_path, 
         subfolder="unet", 
         revision=args.revision, 
-        use_image_cross_attention=True
+        use_image_cross_attention=True,
+        # TODO: modifica qui
     )
+
+    print(f'===== if use ram encoder? {unet.config.use_image_cross_attention}')
 
 else:
     # resume from pretrained SD
@@ -1311,7 +1321,7 @@ train_dataloader = torch.utils.data.DataLoader(
     train_dataset,
     num_workers=args.dataloader_num_workers,
     batch_size=args.train_batch_size,
-    shuffle=True
+    shuffle=True,
 )
 
 logger.info("Creating validation dataloader...")
@@ -1326,7 +1336,7 @@ validation_dataloader = torch.utils.data.DataLoader(
     validation_dataset,
     num_workers=args.dataloader_num_workers,
     batch_size=args.train_batch_size,
-    shuffle=False
+    shuffle=False,
 )
 
 # Scheduler and math around the number of training steps.
@@ -1484,8 +1494,8 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 ram_encoder_hidden_states = batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
             
                 # SAM2 Segmentation + image embeddings
-                sam2_segmentation_encoder_hidden_states = batch["sam2_seg_embeds"]
-                sam2_encoder_hidden_states = batch["sam2_img_embeds"]
+                sam2_segmentation_encoder_hidden_states = batch["sam2_seg_embeds"].to(accelerator.device, dtype=weight_dtype)
+                sam2_encoder_hidden_states = batch["sam2_img_embeds"].to(accelerator.device, dtype=weight_dtype)
 
             # ControlNet
             down_block_res_samples, mid_block_res_sample = controlnet(
@@ -1591,6 +1601,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 ######################################################################################################
 
             diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+            # diffusion_loss = F.l1_loss(model_pred.float(), target.float(), reduction="mean")
 
             ######################################################################################################
             # --- COMPUTATIONAL GRAPH DEBUG CHECK 4 ---
@@ -1622,9 +1633,6 @@ for epoch in range(first_epoch, args.num_train_epochs):
             accelerator.backward(loss)
 
             if accelerator.sync_gradients:
-
-                unet_for_norm = accelerator.unwrap_model(unet)
-                controlnet_for_norm = accelerator.unwrap_model(controlnet)
                 
                 total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), 2).cpu() for p in params_to_optimize if p.grad is not None]), 2)
                 accelerator.log({"grad_norm": total_norm.item()}, step=global_step)
@@ -1706,5 +1714,13 @@ if accelerator.is_main_process:
             commit_message="End of training",
             ignore_patterns=["step_*", "epoch_*"],
         )
+
+    validation_images_list = glob.glob(os.path.join(args.output_dir + "/validation_samples", "*.png"))
+    validation_images = []
+    for path in validation_images_list:
+        img = Image.open(path).convert("RGB")
+        validation_images.append(img)
+
+    image_grid(validation_images, 1, len(validation_images)).save(os.path.join(args.output_dir, "/validation_samples/grid.png"))
 
 accelerator.end_training()
