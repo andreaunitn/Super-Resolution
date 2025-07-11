@@ -570,7 +570,8 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         use_sam2=False,
         seg_cross_attention_dim=256,
         use_fusion_conv=False,
-        use_fusion_sum=True,
+        use_double_fusion_conv=True,
+        use_fusion_sum=False,
     ):
         super().__init__()
 
@@ -709,7 +710,6 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         self.gradient_checkpointing = False
 
         self.use_fusion_conv = use_fusion_conv
-
         if self.use_fusion_conv:
             self.fusion_conv = nn.Conv2d(
                 in_channels=in_channels * 2,
@@ -722,14 +722,53 @@ class UNetMidBlock2DCrossAttn(nn.Module):
 
             with torch.no_grad():
                 self.fusion_conv.weight.zero_()
-                if self.fusion_conv.bias is not None:
-                    self.fusion_conv.bias.zero_()
+                self.fusion_conv.bias.zero_()
 
                 out_ch = self.fusion_conv.out_channels
                 
                 for i in range(out_ch):
                     self.fusion_conv.weight[i, i, 1, 1] = 0.5
                     self.fusion_conv.weight[i, i + out_ch, 1, 1] = 0.5
+        
+        self.use_double_fusion_conv = use_double_fusion_conv
+        if self.use_double_fusion_conv:
+            bottleneck_channels = in_channels
+
+            self.double_fusion_conv = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=in_channels * 2,
+                    out_channels=bottleneck_channels,
+                    kernel_size=3,
+                    padding=1,
+                    stride=1,
+                    bias=True,
+                ),
+                nn.LeakyReLU(inplace=True),
+                nn.Conv2d(
+                    in_channels=bottleneck_channels,
+                    out_channels=in_channels,
+                    kernel_size=3,
+                    padding=1,
+                    stride=1,
+                    bias=True,
+                ),
+            )
+
+            with torch.no_grad():
+                first_conv = self.double_fusion_conv[0]
+                first_conv.weight.zero_()
+                first_conv.bias.zero_()
+                
+                for i in range(bottleneck_channels):
+                    first_conv.weight[i, i, 1, 1] = 0.5
+                    first_conv.weight[i, i + in_channels, 1, 1] = 0.5
+
+                second_conv = self.double_fusion_conv[2]
+                second_conv.weight.zero_()
+                second_conv.bias.zero_()
+                
+                for i in range(in_channels):
+                    second_conv.weight[i, i, 1, 1] = 1.0
 
     def forward(
         self,
@@ -788,6 +827,10 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                         if self.use_fusion_conv:
                             concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                             hidden_states = self.fusion_conv(concat_hidden_states)
+                        
+                        elif self.use_double_fusion_conv:
+                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                            hidden_states = self.double_fusion_conv(concat_hidden_states)
 
                         elif self.use_fusion_sum:
                             hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
@@ -845,6 +888,10 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     if self.use_fusion_conv:
                         concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                         hidden_states = self.fusion_conv(concat_hidden_states)
+
+                    elif self.use_double_fusion_conv:
+                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                        hidden_states = self.double_fusion_conv(concat_hidden_states)
                     
                     elif self.use_fusion_sum:
                         hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
@@ -1170,7 +1217,8 @@ class CrossAttnDownBlock2D(nn.Module):
         use_sam2=False,
         seg_cross_attention_dim=256,
         use_fusion_conv=False,
-        use_fusion_sum=True,
+        use_double_fusion_conv=True,
+        use_fusion_sum=False,
     ):
         super().__init__()
         resnets = []
@@ -1309,7 +1357,6 @@ class CrossAttnDownBlock2D(nn.Module):
         self.gradient_checkpointing = False
 
         self.use_fusion_conv = use_fusion_conv
-
         if self.use_fusion_conv:
             self.fusion_conv = nn.Conv2d(
                 in_channels=out_channels * 2,
@@ -1322,14 +1369,54 @@ class CrossAttnDownBlock2D(nn.Module):
             
             with torch.no_grad():
                 self.fusion_conv.weight.zero_()
-                if self.fusion_conv.bias is not None:
-                    self.fusion_conv.bias.zero_()
+                self.fusion_conv.bias.zero_()
 
                 out_ch = self.fusion_conv.out_channels
                 
                 for i in range(out_ch):
                     self.fusion_conv.weight[i, i, 1, 1] = 0.5
                     self.fusion_conv.weight[i, i + out_ch, 1, 1] = 0.5
+
+        # Double fusion convolution
+        self.use_double_fusion_conv = use_double_fusion_conv
+        if self.use_double_fusion_conv:
+            bottleneck_channels = out_channels
+
+            self.double_fusion_conv = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=out_channels * 2,
+                    out_channels=bottleneck_channels,
+                    kernel_size=3,
+                    padding=1,
+                    stride=1,
+                    bias=True,
+                ),
+                nn.LeakyReLU(inplace=True),
+                nn.Conv2d(
+                    in_channels=bottleneck_channels,
+                    out_channels=out_channels,
+                    kernel_size=3,
+                    padding=1,
+                    stride=1,
+                    bias=True,
+                ),
+            )
+
+            with torch.no_grad():
+                first_conv = self.double_fusion_conv[0]
+                first_conv.weight.zero_()
+                first_conv.bias.zero_()
+                
+                for i in range(bottleneck_channels):
+                    first_conv.weight[i, i, 1, 1] = 0.5
+                    first_conv.weight[i, i + out_channels, 1, 1] = 0.5
+
+                second_conv = self.double_fusion_conv[2]
+                second_conv.weight.zero_()
+                second_conv.bias.zero_()
+                
+                for i in range(out_channels):
+                    second_conv.weight[i, i, 1, 1] = 1.0
 
     def forward(
         self,
@@ -1392,6 +1479,10 @@ class CrossAttnDownBlock2D(nn.Module):
                         if self.use_fusion_conv:
                             concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                             hidden_states = self.fusion_conv(concat_hidden_states)
+
+                        elif self.use_double_fusion_conv:
+                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                            hidden_states = self.double_fusion_conv(concat_hidden_states)
                         
                         elif self.use_fusion_sum:
                             hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
@@ -1447,6 +1538,10 @@ class CrossAttnDownBlock2D(nn.Module):
                     if self.use_fusion_conv:
                         concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                         hidden_states = self.fusion_conv(concat_hidden_states)
+
+                    elif self.use_double_fusion_conv:
+                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                        hidden_states = self.double_fusion_conv(concat_hidden_states)
 
                     elif self.use_fusion_sum:
                         hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
@@ -2532,7 +2627,8 @@ class CrossAttnUpBlock2D(nn.Module):
         use_sam2=False,
         seg_cross_attention_dim=256,
         use_fusion_conv=False,
-        use_fusion_sum=True,
+        use_double_fusion_conv=True,
+        use_fusion_sum=False,
     ):
         super().__init__()
         resnets = []
@@ -2667,7 +2763,6 @@ class CrossAttnUpBlock2D(nn.Module):
         self.gradient_checkpointing = False
 
         self.use_fusion_conv = use_fusion_conv
-
         if self.use_fusion_conv:
             self.fusion_conv = nn.Conv2d(
                 in_channels=out_channels * 2,
@@ -2680,14 +2775,54 @@ class CrossAttnUpBlock2D(nn.Module):
 
             with torch.no_grad():
                 self.fusion_conv.weight.zero_()
-                if self.fusion_conv.bias is not None:
-                    self.fusion_conv.bias.zero_()
+                self.fusion_conv.bias.zero_()
 
                 out_ch = self.fusion_conv.out_channels
                 
                 for i in range(out_ch):
                     self.fusion_conv.weight[i, i, 1, 1] = 0.5
                     self.fusion_conv.weight[i, i + out_ch, 1, 1] = 0.5
+
+        # Double fusion convolution
+        self.use_double_fusion_conv = use_double_fusion_conv
+        if self.use_double_fusion_conv:
+            bottleneck_channels = out_channels
+
+            self.double_fusion_conv = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=out_channels * 2,
+                    out_channels=bottleneck_channels,
+                    kernel_size=3,
+                    padding=1,
+                    stride=1,
+                    bias=True,
+                ),
+                nn.LeakyReLU(inplace=True),
+                nn.Conv2d(
+                    in_channels=bottleneck_channels,
+                    out_channels=out_channels,
+                    kernel_size=3,
+                    padding=1,
+                    stride=1,
+                    bias=True,
+                ),
+            )
+
+            with torch.no_grad():
+                first_conv = self.double_fusion_conv[0]
+                first_conv.weight.zero_()
+                first_conv.bias.zero_()
+                
+                for i in range(bottleneck_channels):
+                    first_conv.weight[i, i, 1, 1] = 0.5
+                    first_conv.weight[i, i + out_channels, 1, 1] = 0.5
+
+                second_conv = self.double_fusion_conv[2]
+                second_conv.weight.zero_()
+                second_conv.bias.zero_()
+                
+                for i in range(out_channels):
+                    second_conv.weight[i, i, 1, 1] = 1.0
 
     def forward(
         self,
@@ -2755,6 +2890,10 @@ class CrossAttnUpBlock2D(nn.Module):
                             concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                             hidden_states = self.fusion_conv(concat_hidden_states)
 
+                        elif self.use_double_fusion_conv:
+                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                            hidden_states = self.double_fusion_conv(concat_hidden_states)
+
                         elif self.use_fusion_sum:
                             hidden_states = tag_hidden_states + dape_hidden_states - hidden_states
 
@@ -2809,6 +2948,10 @@ class CrossAttnUpBlock2D(nn.Module):
                     if self.use_fusion_conv:
                         concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
                         hidden_states = self.fusion_conv(concat_hidden_states)
+
+                    elif self.use_double_fusion_conv:
+                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                        hidden_states = self.double_fusion_conv(concat_hidden_states)
 
                     elif self.use_fusion_sum:
                         hidden_states = tag_hidden_states + dape_hidden_states - hidden_states

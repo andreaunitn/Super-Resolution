@@ -67,8 +67,10 @@ do
       --resume_from_checkpoint="$RESUME_CHECKPOINT" \
       --train_controlnet_dape_attention \
       --train_controlnet_tag_attention \
+      --train_controlnet_double_fusion_conv \
       --train_unet_dape_attention \
       --train_unet_tag_attention \
+      --train_unet_double_fusion_conv \
 
     EXIT_CODE=$?
     if [ $EXIT_CODE -eq 0 ]; then

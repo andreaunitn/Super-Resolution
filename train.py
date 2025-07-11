@@ -871,6 +871,16 @@ def parse_args(input_args=None):
         help="Set this flag to enable the merging of the embeddings using convolution in the UNet."
     )
     parser.add_argument(
+        "--train_controlnet_double_fusion_conv",
+        action="store_true",
+        help="Set this flag to enable the merging of the embeddings using convolution->leaky_relu->convolution in the ControlNet."
+    )
+    parser.add_argument(
+        "--train_unet_double_fusion_conv",
+        action="store_true",
+        help="Set this flag to enable the merging of the embeddings using convolution->leaky_relu->convolution in the UNet."
+    )
+    parser.add_argument(
         "--seesr_model_path", 
         type=str, 
         default=None
@@ -1217,6 +1227,19 @@ if args.train_controlnet_fusion_conv:
             print(f'  - {name}')
             trainable_module_found = True
 
+if args.train_controlnet_double_fusion_conv:
+    trainable_module_found = False
+
+    for name, module in controlnet.named_modules():
+        if name.endswith("double_fusion_conv"):
+            for params in module.parameters():
+                params.requires_grad = True
+
+            if not trainable_module_found:
+                print("Found trainable modules in ControlNet:")
+            print(f'  - {name}')
+            trainable_module_found = True
+
 if args.train_unet_fusion_conv:
     trainable_module_found = False
 
@@ -1228,7 +1251,20 @@ if args.train_unet_fusion_conv:
             if not trainable_module_found:
                 print("Found trainable modules in UNet:")
             print(f'  - {name}')
-            trainable_module_found = True   
+            trainable_module_found = True
+
+if args.train_unet_double_fusion_conv:
+    trainable_module_found = False
+
+    for name, module in unet.named_modules():
+        if name.endswith("double_fusion_conv"):
+            for params in module.parameters():
+                params.requires_grad = True
+
+            if not trainable_module_found:
+                print("Found trainable modules in UNet:")
+            print(f'  - {name}')
+            trainable_module_found = True
 
 if args.enable_xformers_memory_efficient_attention:
     if is_xformers_available():
@@ -1716,11 +1752,12 @@ if accelerator.is_main_process:
         )
 
     validation_images_list = glob.glob(os.path.join(args.output_dir + "/validation_samples", "*.png"))
+    validation_images_list.sort(key=lambda f: int(os.path.basename(f).split('_')[1].split('.')[0]))
     validation_images = []
     for path in validation_images_list:
         img = Image.open(path).convert("RGB")
         validation_images.append(img)
 
-    image_grid(validation_images, 1, len(validation_images)).save(os.path.join(args.output_dir, "/validation_samples/grid.png"))
+    image_grid(validation_images, 1, len(validation_images)).save(os.path.join(args.output_dir, "validation_samples/grid.png"))
 
 accelerator.end_training()

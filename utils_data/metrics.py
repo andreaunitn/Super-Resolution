@@ -1,5 +1,8 @@
 import argparse
 import os
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pyiqa
 from PIL import Image
@@ -57,17 +60,17 @@ if __name__ == "__main__":
         metrics["fid"] = 0
 
         lpips_iqa_metric = pyiqa.create_metric('lpips', device=device)
-        dists_iqa_metric = pyiqa.create_metric('dists', device=device)
+        dists_iqa_metric = pyiqa.create_metric('dists', device=device, crop_border=4)
         fid_iqa_metric = pyiqa.create_metric('fid', device=device)
     
-    niqe_iqa_metric = pyiqa.create_metric('niqe', device=device)
+    niqe_iqa_metric = pyiqa.create_metric('niqe', device=device, crop_border=4)
     maniqa_iqa_metric = pyiqa.create_metric('maniqa', device=device)
     musiq_iqa_metric = pyiqa.create_metric('musiq', device=device)
     clip_iqa_metric = pyiqa.create_metric('clipiqa', device=device)
 
     with torch.autocast("cuda", dtype=torch.float32):
         processed_count = 0
-        image_files = sorted(os.listdir(args.sr_dir))
+        image_files = sorted(os.listdir(os.path.join(args.sr_dir, "sample00")))
         num_images = len(image_files)
 
     print("######################################################################################")
@@ -75,7 +78,7 @@ if __name__ == "__main__":
     print("######################################################################################")
 
     for i, image in enumerate(image_files):
-        sr_path = os.path.join(args.sr_dir, image)
+        sr_path = os.path.join(args.sr_dir + "/sample00", image)
         sr_image = img_preproc(Image.open(sr_path).convert("RGB")).unsqueeze(0).to(device)
 
         if args.gt_dir is not None:
@@ -106,7 +109,7 @@ if __name__ == "__main__":
         print(f"Image {i+1}/{num_images}: {image}")
 
     if args.gt_dir is not None:
-        fid = fid_iqa_metric(args.gt_dir, args.sr_dir)
+        fid = fid_iqa_metric(args.gt_dir, args.sr_dir + "/sample00")
         metrics["fid"] = fid
 
     m = []
@@ -115,6 +118,6 @@ if __name__ == "__main__":
 
     metrics_to_log[args.dataset] = m
     
-    path = "metrics/"
-    with open(os.path.join(path, args.dataset + ".json"), "w") as f:
+    path = f"metrics/{args.dataset}"
+    with open(os.path.join(path, "results.json"), "w") as f:
         json.dump(metrics_to_log, f, indent=4)
