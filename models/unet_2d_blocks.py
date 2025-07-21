@@ -567,10 +567,10 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         attention_type="default",
         use_image_cross_attention=False,
         image_cross_attention_dim=512,
-        use_sam2=False,
+        use_sam2=True,
         seg_cross_attention_dim=256,
-        use_fusion_conv=False,
-        use_double_fusion_conv=True,
+        use_fusion_conv=True,
+        use_double_fusion_conv=False,
         use_fusion_sum=False,
     ):
         super().__init__()
@@ -779,12 +779,14 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         image_encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        sam2_encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        sam2_segmentation_encoder_hidden_states: Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
         
         hidden_states = self.resnets[0](hidden_states, temb)
 
         if self.use_image_cross_attention:
-            for attn, dape_image_attn, resnet in zip(self.attentions, self.image_attentions, self.resnets[1:]):
+            for attn, dape_image_attn, resnet, sam2_image_attn, sam2_seg_attn in zip(self.attentions, self.image_attentions, self.resnets[1:], self.sam2_image_attentions, self.sam2_segmentation_attentions):
 
                 if self.gradient_checkpointing:
             
@@ -809,23 +811,23 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                                                                 encoder_attention_mask=encoder_attention_mask, 
                                                                 return_dict=False)[0]
 
-                        # B, C, H, W = sam2_encoder_hidden_states.shape
-                        # sam2_hidden_states = sam2_image_attn(hidden_states, 
-                        #                                      encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
-                        #                                      cross_attention_kwargs=cross_attention_kwargs, 
-                        #                                      attention_mask=attention_mask, 
-                        #                                      encoder_attention_mask=encoder_attention_mask, 
-                        #                                      return_dict=False)[0]
+                        B, C, H, W = sam2_encoder_hidden_states.shape
+                        sam2_hidden_states = sam2_image_attn(hidden_states, 
+                                                             encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
+                                                             cross_attention_kwargs=cross_attention_kwargs, 
+                                                             attention_mask=attention_mask, 
+                                                             encoder_attention_mask=encoder_attention_mask, 
+                                                             return_dict=False)[0]
                         
-                        # sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
-                        #                                                 encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
-                        #                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                        #                                                 attention_mask=attention_mask, 
-                        #                                                 encoder_attention_mask=encoder_attention_mask, 
-                        #                                                 return_dict=False)[0]
+                        sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
+                                                                        encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
+                                                                        cross_attention_kwargs=cross_attention_kwargs, 
+                                                                        attention_mask=attention_mask, 
+                                                                        encoder_attention_mask=encoder_attention_mask, 
+                                                                        return_dict=False)[0]
                         
                         if self.use_fusion_conv:
-                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states), dim=1)
                             hidden_states = self.fusion_conv(concat_hidden_states)
                         
                         elif self.use_double_fusion_conv:
@@ -870,23 +872,23 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                                                             encoder_attention_mask=encoder_attention_mask, 
                                                             return_dict=False)[0]
 
-                    # B, C, H, W = sam2_encoder_hidden_states.shape
-                    # sam2_hidden_states = sam2_image_attn(hidden_states, 
-                    #                                      encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
-                    #                                      cross_attention_kwargs=cross_attention_kwargs, 
-                    #                                      attention_mask=attention_mask, 
-                    #                                      encoder_attention_mask=encoder_attention_mask, 
-                    #                                      return_dict=False)[0]
+                    B, C, H, W = sam2_encoder_hidden_states.shape
+                    sam2_hidden_states = sam2_image_attn(hidden_states, 
+                                                         encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
+                                                         cross_attention_kwargs=cross_attention_kwargs, 
+                                                         attention_mask=attention_mask, 
+                                                         encoder_attention_mask=encoder_attention_mask, 
+                                                         return_dict=False)[0]
                     
-                    # sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
-                    #                                                 encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
-                    #                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                    #                                                 attention_mask=attention_mask, 
-                    #                                                 encoder_attention_mask=encoder_attention_mask, 
-                    #                                                 return_dict=False)[0]
+                    sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
+                                                                    encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
+                                                                    cross_attention_kwargs=cross_attention_kwargs, 
+                                                                    attention_mask=attention_mask, 
+                                                                    encoder_attention_mask=encoder_attention_mask, 
+                                                                    return_dict=False)[0]
 
                     if self.use_fusion_conv:
-                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states), dim=1)
                         hidden_states = self.fusion_conv(concat_hidden_states)
 
                     elif self.use_double_fusion_conv:
@@ -1214,10 +1216,10 @@ class CrossAttnDownBlock2D(nn.Module):
         attention_type="default",
         use_image_cross_attention=False,
         image_cross_attention_dim=512,
-        use_sam2=False,
+        use_sam2=True,
         seg_cross_attention_dim=256,
-        use_fusion_conv=False,
-        use_double_fusion_conv=True,
+        use_fusion_conv=True,
+        use_double_fusion_conv=False,
         use_fusion_sum=False,
     ):
         super().__init__()
@@ -1428,12 +1430,14 @@ class CrossAttnDownBlock2D(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         additional_residuals=None,
         image_encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        sam2_encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        sam2_segmentation_encoder_hidden_states: Optional[torch.FloatTensor] = None,
     ):
         output_states = ()
 
         if self.use_image_cross_attention:
-            blocks = list(zip(self.resnets, self.attentions, self.image_attentions))
-            for i, (resnet, attn, dape_image_attn) in enumerate(blocks):
+            blocks = list(zip(self.resnets, self.attentions, self.image_attentions, self.sam2_image_attentions, self.sam2_segmentation_attentions))
+            for i, (resnet, attn, dape_image_attn, sam2_image_attn, sam2_seg_attn) in enumerate(blocks):
 
                 if self.gradient_checkpointing:
                     def create_custom_forward(module):
@@ -1461,23 +1465,23 @@ class CrossAttnDownBlock2D(nn.Module):
                                                                 encoder_attention_mask=encoder_attention_mask, 
                                                                 return_dict=False)[0]
                         
-                        # B, C, H, W = sam2_encoder_hidden_states.shape
-                        # sam2_hidden_states = sam2_image_attn(hidden_states, 
-                        #                                      encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
-                        #                                      cross_attention_kwargs=cross_attention_kwargs, 
-                        #                                      attention_mask=attention_mask, 
-                        #                                      encoder_attention_mask=encoder_attention_mask, 
-                        #                                      return_dict=False)[0]
+                        B, C, H, W = sam2_encoder_hidden_states.shape
+                        sam2_hidden_states = sam2_image_attn(hidden_states, 
+                                                             encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
+                                                             cross_attention_kwargs=cross_attention_kwargs, 
+                                                             attention_mask=attention_mask, 
+                                                             encoder_attention_mask=encoder_attention_mask, 
+                                                             return_dict=False)[0]
                         
-                        # sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
-                        #                                                 encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
-                        #                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                        #                                                 attention_mask=attention_mask, 
-                        #                                                 encoder_attention_mask=encoder_attention_mask, 
-                        #                                                 return_dict=False)[0]
+                        sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
+                                                                        encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
+                                                                        cross_attention_kwargs=cross_attention_kwargs, 
+                                                                        attention_mask=attention_mask, 
+                                                                        encoder_attention_mask=encoder_attention_mask, 
+                                                                        return_dict=False)[0]
 
                         if self.use_fusion_conv:
-                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states), dim=1)
                             hidden_states = self.fusion_conv(concat_hidden_states)
 
                         elif self.use_double_fusion_conv:
@@ -1520,23 +1524,23 @@ class CrossAttnDownBlock2D(nn.Module):
                                                             encoder_attention_mask=encoder_attention_mask, 
                                                             return_dict=False)[0]
 
-                    # B, C, H, W = sam2_encoder_hidden_states.shape
-                    # sam2_hidden_states = sam2_image_attn(hidden_states, 
-                    #                                      encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
-                    #                                      cross_attention_kwargs=cross_attention_kwargs, 
-                    #                                      attention_mask=attention_mask, 
-                    #                                      encoder_attention_mask=encoder_attention_mask, 
-                    #                                      return_dict=False)[0]
+                    B, C, H, W = sam2_encoder_hidden_states.shape
+                    sam2_hidden_states = sam2_image_attn(hidden_states, 
+                                                         encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
+                                                         cross_attention_kwargs=cross_attention_kwargs, 
+                                                         attention_mask=attention_mask, 
+                                                         encoder_attention_mask=encoder_attention_mask, 
+                                                         return_dict=False)[0]
                     
-                    # sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
-                    #                                                 encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
-                    #                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                    #                                                 attention_mask=attention_mask, 
-                    #                                                 encoder_attention_mask=encoder_attention_mask, 
-                    #                                                 return_dict=False)[0]
+                    sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
+                                                                    encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
+                                                                    cross_attention_kwargs=cross_attention_kwargs, 
+                                                                    attention_mask=attention_mask, 
+                                                                    encoder_attention_mask=encoder_attention_mask, 
+                                                                    return_dict=False)[0]
 
                     if self.use_fusion_conv:
-                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states), dim=1)
                         hidden_states = self.fusion_conv(concat_hidden_states)
 
                     elif self.use_double_fusion_conv:
@@ -2624,10 +2628,10 @@ class CrossAttnUpBlock2D(nn.Module):
         attention_type="default",
         use_image_cross_attention=False,
         image_cross_attention_dim=512,
-        use_sam2=False,
+        use_sam2=True,
         seg_cross_attention_dim=256,
-        use_fusion_conv=False,
-        use_double_fusion_conv=True,
+        use_fusion_conv=True,
+        use_double_fusion_conv=False,
         use_fusion_sum=False,
     ):
         super().__init__()
@@ -2835,10 +2839,12 @@ class CrossAttnUpBlock2D(nn.Module):
         attention_mask: Optional[torch.FloatTensor] = None,
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         image_encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        sam2_encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        sam2_segmentation_encoder_hidden_states: Optional[torch.FloatTensor] = None,
     ):  
         
         if self.use_image_cross_attention:
-            for resnet, attn, dape_image_attn in zip(self.resnets, self.attentions, self.image_attentions):
+            for resnet, attn, dape_image_attn, sam2_image_attn, sam2_seg_attn in zip(self.resnets, self.attentions, self.image_attentions, self.sam2_image_attentions, self.sam2_segmentation_attentions):
                 # pop res hidden states
                 res_hidden_states = res_hidden_states_tuple[-1]
                 res_hidden_states_tuple = res_hidden_states_tuple[:-1]
@@ -2871,23 +2877,23 @@ class CrossAttnUpBlock2D(nn.Module):
                                                                 encoder_attention_mask=encoder_attention_mask, 
                                                                 return_dict=False)[0]
 
-                        # B, C, H, W = sam2_encoder_hidden_states.shape
-                        # sam2_hidden_states = sam2_image_attn(hidden_states, 
-                        #                                      encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
-                        #                                      cross_attention_kwargs=cross_attention_kwargs, 
-                        #                                      attention_mask=attention_mask, 
-                        #                                      encoder_attention_mask=encoder_attention_mask, 
-                        #                                      return_dict=False)[0]
+                        B, C, H, W = sam2_encoder_hidden_states.shape
+                        sam2_hidden_states = sam2_image_attn(hidden_states, 
+                                                             encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
+                                                             cross_attention_kwargs=cross_attention_kwargs, 
+                                                             attention_mask=attention_mask, 
+                                                             encoder_attention_mask=encoder_attention_mask, 
+                                                             return_dict=False)[0]
                         
-                        # sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
-                        #                                                 encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
-                        #                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                        #                                                 attention_mask=attention_mask, 
-                        #                                                 encoder_attention_mask=encoder_attention_mask, 
-                        #                                                 return_dict=False)[0]
+                        sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
+                                                                        encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
+                                                                        cross_attention_kwargs=cross_attention_kwargs, 
+                                                                        attention_mask=attention_mask, 
+                                                                        encoder_attention_mask=encoder_attention_mask, 
+                                                                        return_dict=False)[0]
 
                         if self.use_fusion_conv:
-                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                            concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states), dim=1)
                             hidden_states = self.fusion_conv(concat_hidden_states)
 
                         elif self.use_double_fusion_conv:
@@ -2930,23 +2936,23 @@ class CrossAttnUpBlock2D(nn.Module):
                                                             encoder_attention_mask=encoder_attention_mask, 
                                                             return_dict=False)[0]
 
-                    # B, C, H, W = sam2_encoder_hidden_states.shape
-                    # sam2_hidden_states = sam2_image_attn(hidden_states, 
-                    #                                      encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
-                    #                                      cross_attention_kwargs=cross_attention_kwargs, 
-                    #                                      attention_mask=attention_mask, 
-                    #                                      encoder_attention_mask=encoder_attention_mask, 
-                    #                                      return_dict=False)[0]
+                    B, C, H, W = sam2_encoder_hidden_states.shape
+                    sam2_hidden_states = sam2_image_attn(hidden_states, 
+                                                         encoder_hidden_states=sam2_encoder_hidden_states.view(B, C, H * W).permute(0, 2, 1).contiguous(), 
+                                                         cross_attention_kwargs=cross_attention_kwargs, 
+                                                         attention_mask=attention_mask, 
+                                                         encoder_attention_mask=encoder_attention_mask, 
+                                                         return_dict=False)[0]
                     
-                    # sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
-                    #                                                 encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
-                    #                                                 cross_attention_kwargs=cross_attention_kwargs, 
-                    #                                                 attention_mask=attention_mask, 
-                    #                                                 encoder_attention_mask=encoder_attention_mask, 
-                    #                                                 return_dict=False)[0]
+                    sam2_segmentation_hidden_states = sam2_seg_attn(hidden_states, 
+                                                                    encoder_hidden_states=sam2_segmentation_encoder_hidden_states, 
+                                                                    cross_attention_kwargs=cross_attention_kwargs, 
+                                                                    attention_mask=attention_mask, 
+                                                                    encoder_attention_mask=encoder_attention_mask, 
+                                                                    return_dict=False)[0]
                     
                     if self.use_fusion_conv:
-                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states), dim=1)
+                        concat_hidden_states = torch.cat((tag_hidden_states, dape_hidden_states, sam2_hidden_states, sam2_segmentation_hidden_states), dim=1)
                         hidden_states = self.fusion_conv(concat_hidden_states)
 
                     elif self.use_double_fusion_conv:

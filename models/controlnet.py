@@ -642,8 +642,8 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin):
         guess_mode: bool = False,
         return_dict: bool = True,
         image_encoder_hidden_states: torch.Tensor = None,
-        # sam2_encoder_hidden_states: torch.Tensor = None,
-        # sam2_segmentation_encoder_hidden_states: torch.Tensor = None,
+        sam2_encoder_hidden_states: torch.Tensor = None,
+        sam2_segmentation_encoder_hidden_states: torch.Tensor = None,
         vae_encode_condition_hidden_states: torch.Tensor = None, 
     ) -> Union[ControlNetOutput, Tuple]:
         """
@@ -772,8 +772,8 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin):
                     attention_mask=attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                     image_encoder_hidden_states=image_encoder_hidden_states,
-                    # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                    # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                 )
 
             else:
@@ -790,8 +790,8 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin):
                 attention_mask=attention_mask,
                 cross_attention_kwargs=cross_attention_kwargs,
                 image_encoder_hidden_states=image_encoder_hidden_states,
-                # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
             )
 
         # 5. Control net blocks

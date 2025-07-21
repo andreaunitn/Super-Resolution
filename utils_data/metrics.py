@@ -32,6 +32,11 @@ if __name__ == "__main__":
         type=str,
         default=None,
     )
+    parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+    )
 
     args = parser.parse_args()
     device = torch.device("cuda")
@@ -119,5 +124,5 @@ if __name__ == "__main__":
     metrics_to_log[args.dataset] = m
     
     path = f"metrics/{args.dataset}"
-    with open(os.path.join(path, "results.json"), "w") as f:
+    with open(os.path.join(path, "results_" + args.name + ".json"), "w") as f:
         json.dump(metrics_to_log, f, indent=4)

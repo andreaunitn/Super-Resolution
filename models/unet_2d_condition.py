@@ -727,8 +727,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
         image_encoder_hidden_states: torch.Tensor = None,
-        # sam2_encoder_hidden_states: torch.Tensor = None,
-        # sam2_segmentation_encoder_hidden_states: torch.Tensor = None,
+        sam2_encoder_hidden_states: torch.Tensor = None,
+        sam2_segmentation_encoder_hidden_states: torch.Tensor = None,
     ) -> Union[UNet2DConditionOutput, Tuple]:
         r"""
         The [`UNet2DConditionModel`] forward method.
@@ -944,8 +944,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     cross_attention_kwargs=cross_attention_kwargs,
                     encoder_attention_mask=encoder_attention_mask,
                     image_encoder_hidden_states=image_encoder_hidden_states,
-                    # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                    # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                     **additional_residuals,
                 )
             else:
@@ -977,8 +977,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 cross_attention_kwargs=cross_attention_kwargs,
                 encoder_attention_mask=encoder_attention_mask,
                 image_encoder_hidden_states=image_encoder_hidden_states,
-                # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
             )
             # To support T2I-Adapter-XL
             if (
@@ -1014,8 +1014,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     attention_mask=attention_mask,
                     encoder_attention_mask=encoder_attention_mask,
                     image_encoder_hidden_states=image_encoder_hidden_states,
-                    # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                    # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                 )
             else:
                 sample = upsample_block(
@@ -1036,44 +1036,81 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
     @classmethod
     def from_pretrained_orig(cls, pretrained_model_path, seesr_model_path, subfolder=None, use_image_cross_attention=False, **kwargs):
         if subfolder is not None:
-            pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
-            seesr_model_path = os.path.join(seesr_model_path, subfolder)
+            # Use the SeeSR path to find the config, as it's the model we actually want
+            seesr_config_path = os.path.join(seesr_model_path, subfolder)
+        else:
+            seesr_config_path = seesr_model_path
 
-        config_file = os.path.join(pretrained_model_path, 'config.json')
+        # 1. Load the CONFIGURATION from the SeeSR model, not the base SD model.
+        #    This ensures all model parameters (like use_image_cross_attention) are correct.
+        config_file = os.path.join(seesr_config_path, 'config.json')
         if not os.path.isfile(config_file):
             raise RuntimeError(f"{config_file} does not exist")
         with open(config_file, "r") as f:
             config = json.load(f)
 
-        config['use_image_cross_attention'] = use_image_cross_attention
-
-        from diffusers.utils import WEIGHTS_NAME 
-        from diffusers.utils import SAFETENSORS_WEIGHTS_NAME
-
-
+        # Create the model from the SeeSR config
         model = cls.from_config(config)
 
-        ## for .bin file
-        # model_file = os.path.join(pretrained_model_path, WEIGHTS_NAME)
-        # if not os.path.isfile(model_file):
-        #     raise RuntimeError(f"{model_file} does not exist")
-        # state_dict = torch.load(model_file, map_location="cpu")
-        # model.load_state_dict(state_dict, strict=False)
+        from diffusers.utils import SAFETENSORS_WEIGHTS_NAME
 
-        ## for .safetensors file
-        import safetensors
-        model_file = os.path.join(pretrained_model_path, SAFETENSORS_WEIGHTS_NAME)
-        model_file_seesr = os.path.join(seesr_model_path, SAFETENSORS_WEIGHTS_NAME)
-        if not os.path.isfile(model_file):
-            raise RuntimeError(f"{model_file} does not exist")
+        # 2. Load the WEIGHTS directly and exclusively from the SeeSR model file.
+        model_file_seesr = os.path.join(seesr_config_path, SAFETENSORS_WEIGHTS_NAME)
         if not os.path.isfile(model_file_seesr):
             raise RuntimeError(f"{model_file_seesr} does not exist")
-        state_dict = safetensors.torch.load_file(model_file, device="cpu")
+            
+        import safetensors
         state_dict_seesr = safetensors.torch.load_file(model_file_seesr, device="cpu")
-        # for k, v in model_seesr.state_dict().items():
-        for k, v in state_dict_seesr.items():
-           if 'image_attentions' in k:
-               state_dict.update({k: v})
-        model.load_state_dict(state_dict, strict=False)
+        
+        # 3. Load the entire SeeSR state dict. `strict=False` is good practice in case
+        #    of minor mismatches, but it should ideally load cleanly.
+        model.load_state_dict(state_dict_seesr, strict=False)
+
+        logger.info(f"Successfully loaded UNet weights from SeeSR model at: {model_file_seesr}")
 
         return model
+
+    # @classmethod
+    # def from_pretrained_orig(cls, pretrained_model_path, seesr_model_path, subfolder=None, use_image_cross_attention=False, **kwargs):
+    #     if subfolder is not None:
+    #         pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
+    #         seesr_model_path = os.path.join(seesr_model_path, subfolder)
+
+    #     config_file = os.path.join(pretrained_model_path, 'config.json')
+    #     if not os.path.isfile(config_file):
+    #         raise RuntimeError(f"{config_file} does not exist")
+    #     with open(config_file, "r") as f:
+    #         config = json.load(f)
+
+    #     config['use_image_cross_attention'] = use_image_cross_attention
+
+    #     from diffusers.utils import WEIGHTS_NAME 
+    #     from diffusers.utils import SAFETENSORS_WEIGHTS_NAME
+
+
+    #     model = cls.from_config(config)
+
+    #     ## for .bin file
+    #     # model_file = os.path.join(pretrained_model_path, WEIGHTS_NAME)
+    #     # if not os.path.isfile(model_file):
+    #     #     raise RuntimeError(f"{model_file} does not exist")
+    #     # state_dict = torch.load(model_file, map_location="cpu")
+    #     # model.load_state_dict(state_dict, strict=False)
+
+    #     ## for .safetensors file
+    #     import safetensors
+    #     model_file = os.path.join(pretrained_model_path, SAFETENSORS_WEIGHTS_NAME)
+    #     model_file_seesr = os.path.join(seesr_model_path, SAFETENSORS_WEIGHTS_NAME)
+    #     if not os.path.isfile(model_file):
+    #         raise RuntimeError(f"{model_file} does not exist")
+    #     if not os.path.isfile(model_file_seesr):
+    #         raise RuntimeError(f"{model_file_seesr} does not exist")
+    #     state_dict = safetensors.torch.load_file(model_file, device="cpu")
+    #     state_dict_seesr = safetensors.torch.load_file(model_file_seesr, device="cpu")
+    #     # for k, v in model_seesr.state_dict().items():
+    #     for k, v in state_dict_seesr.items():
+    #        if 'image_attentions' in k:
+    #            state_dict.update({k: v})
+    #     model.load_state_dict(state_dict, strict=False)
+
+    #     return model

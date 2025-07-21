@@ -4,15 +4,16 @@
 PRETRAINED_MODEL_PATH="preset/models/stable-diffusion-2-base"
 SEESR_MODEL_PATH="preset/models/seesr"
 TINY_VAE_PATH="preset/models/tiny_vae"
-OUTPUT_DIR="preset/train_output/LSDIR/"
+OUTPUT_DIR="preset/train_output/LSDIR"
 ROOT_FOLDERS="preset/datasets/train_datasets/LSDIR"
 RAM_FT_PATH="preset/models/DAPE.pth"
-VALIDATION_PATH="preset/datasets/test_datasets/RealSR/test_LR/Canon_001_LR4.png"
+VALIDATION_PATH="preset/datasets/test_datasets/RealSR/test_LR/Canon_004_LR4.png"
 
 # Hyperparameters
 LEARNING_RATE=5e-6
+FINETUNE_LR=5e-5
 TRAIN_BATCH_SIZE=1
-GRAD_ACCUM_STEPS=32
+GRAD_ACCUM_STEPS=4
 MAX_TRAIN_STEPS=7500
 CHECKPOINTING_STEPS=500
 NULL_TEXT_RATIO=0.5
@@ -49,6 +50,7 @@ do
       --mixed_precision="$PRECISION" \
       --resolution=$RESOLUTION \
       --learning_rate=$LEARNING_RATE \
+      --finetune_lr=$FINETUNE_LR \
       --train_batch_size=$TRAIN_BATCH_SIZE \
       --gradient_accumulation_steps=$GRAD_ACCUM_STEPS \
       --max_train_steps=$MAX_TRAIN_STEPS \
@@ -66,11 +68,10 @@ do
       --generate_validation_image \
       --resume_from_checkpoint="$RESUME_CHECKPOINT" \
       --train_controlnet_dape_attention \
-      --train_controlnet_tag_attention \
-      --train_controlnet_double_fusion_conv \
+      --train_controlnet_fusion_conv \
       --train_unet_dape_attention \
-      --train_unet_tag_attention \
-      --train_unet_double_fusion_conv \
+      --train_unet_fusion_conv \
+      --use_sam2 \
 
     EXIT_CODE=$?
     if [ $EXIT_CODE -eq 0 ]; then

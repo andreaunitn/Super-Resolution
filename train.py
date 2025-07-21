@@ -52,6 +52,8 @@ from models.unet_2d_blocks import CrossAttnDownBlock2D, CrossAttnUpBlock2D, UNet
 
 import glob
 
+import pyiqa
+
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.21.0.dev0")
 
@@ -273,6 +275,9 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
             total_val_loss = 0.0
             total_val_diffusion_loss = 0.0
             total_val_semantic_loss = 0.0
+
+            if args.use_lpips_loss:
+                total_val_lpips_loss = 0.0
             
             for val_batch in tqdm(validation_dataloader, desc="Calculating validation loss", disable=not accelerator.is_local_main_process):
                 with torch.no_grad():
@@ -283,44 +288,57 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
                     bsz = latents.shape[0]
                     timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device).long()
                     noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+
                     encoder_hidden_states = text_encoder(val_batch["input_ids"].to(accelerator.device))[0]
-                    controlnet_image = val_batch["conditioning_pixel_values"].to(accelerator.device, dtype=weight_dtype)
                     ram_encoder_hidden_states = val_batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
+
+                    controlnet_image = val_batch["conditioning_pixel_values"].to(accelerator.device, dtype=weight_dtype)
+
                     sam2_segmentation_encoder_hidden_states = val_batch["sam2_seg_embeds"]
                     sam2_encoder_hidden_states = val_batch["sam2_img_embeds"]
                     
                     if args.use_sam2:
                             
                         down_block_res_samples, mid_block_res_sample = controlnet(
-                            noisy_latents, timesteps, encoder_hidden_states=encoder_hidden_states, controlnet_cond=controlnet_image,
-                            return_dict=False, image_encoder_hidden_states=ram_encoder_hidden_states,
-                            sam2_encoder_hidden_states=sam2_encoder_hidden_states, sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                            noisy_latents, 
+                            timesteps,
+                            encoder_hidden_states=encoder_hidden_states, 
+                            controlnet_cond=controlnet_image,
+                            return_dict=False, 
+                            image_encoder_hidden_states=ram_encoder_hidden_states,
+                            sam2_encoder_hidden_states=sam2_encoder_hidden_states, 
+                            sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                         )
                         
                         model_pred = unet(
-                            noisy_latents, timesteps, encoder_hidden_states=encoder_hidden_states,
+                            noisy_latents, 
+                            timesteps, 
+                            encoder_hidden_states=encoder_hidden_states,
                             down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
                             mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
                             image_encoder_hidden_states=ram_encoder_hidden_states,
-                            # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                            # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
+                            sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                            sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
                         ).sample
 
                     else:
 
                         down_block_res_samples, mid_block_res_sample = controlnet(
-                            noisy_latents, timesteps, encoder_hidden_states=encoder_hidden_states, controlnet_cond=controlnet_image,
-                            return_dict=False, image_encoder_hidden_states=ram_encoder_hidden_states,
-                            # sam2_encoder_hidden_states=None, sam2_segmentation_encoder_hidden_states=None,
+                            noisy_latents, 
+                            timesteps, 
+                            encoder_hidden_states=encoder_hidden_states, 
+                            controlnet_cond=controlnet_image,
+                            return_dict=False, 
+                            image_encoder_hidden_states=ram_encoder_hidden_states,
                         )
                         
                         model_pred = unet(
-                            noisy_latents, timesteps, encoder_hidden_states=encoder_hidden_states,
+                            noisy_latents, 
+                            timesteps, 
+                            encoder_hidden_states=encoder_hidden_states,
                             down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
                             mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
                             image_encoder_hidden_states=ram_encoder_hidden_states,
-                            # sam2_encoder_hidden_states=None,
-                            # sam2_segmentation_encoder_hidden_states=None
                         ).sample
 
                     if noise_scheduler.config.prediction_type == "epsilon":
@@ -332,7 +350,7 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
                     # diffusion_loss = F.l1_loss(model_pred.float(), target.float(), reduction="mean")
                     loss = diffusion_loss
 
-                    if args.use_sam2:
+                    if args.use_sam2_loss or args.use_lpips_loss:
                         alphas_cumprod = noise_scheduler.alphas_cumprod
                         alpha_bar_t = alphas_cumprod[timesteps]
 
@@ -343,14 +361,25 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
                         pred_image_latents_for_vae = pred_original_sample_latents / tiny_vae.config.scaling_factor
                         pred_image = tiny_vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
                         sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0
-                        sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
-                        sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
-                        gt_rgb_normalized = (pixel_values.to(torch.float32) + 1.0) / 2.0
-                        gt_sam_input = sam2_norm(gt_rgb_normalized).to(accelerator.device)
-                        gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
-                        semantic_loss = F.mse_loss(sr_embeds.float(), gt_embeds.float(), reduction="mean")
-                        total_val_semantic_loss += semantic_loss.item()
-                        loss += args.sam2_loss_weight * semantic_loss
+                        
+                        if args.use_sam2_loss:
+                            sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
+                            sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
+
+                            gt_rgb_normalized = (pixel_values.to(torch.float32) + 1.0) / 2.0
+                            gt_sam_input = sam2_norm(gt_rgb_normalized).to(accelerator.device)
+                            gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
+
+                            semantic_loss = F.mse_loss(sr_embeds.float(), gt_embeds.float(), reduction="mean")
+
+                            total_val_semantic_loss += semantic_loss.item()
+                            loss += args.sam2_loss_weight * semantic_loss
+
+                        if args.use_lpips_loss:
+                            gt_rgb = (pixel_values.to(torch.float32) + 1.0) / 2.0
+                            lpips_loss = lpips_metric(sr_rgb.to(torch.float32), gt_rgb)
+                            total_val_lpips_loss += lpips_loss.item()
+                            loss += args.lpips_loss_weight * lpips_loss
 
                     total_val_diffusion_loss += diffusion_loss.item()
                     total_val_loss += loss.item()
@@ -359,11 +388,17 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
             avg_val_diffusion_loss = total_val_diffusion_loss / len(validation_dataloader)
             val_logs = {"val_loss": avg_val_loss, "val_diffusion_loss": avg_val_diffusion_loss}
 
-            if args.use_sam2:
+            if args.use_sam2_loss:
                 avg_val_semantic_loss = total_val_semantic_loss / len(validation_dataloader)
                 val_logs["val_semantic_loss"] = avg_val_semantic_loss
+            
+            if args.use_lpips_loss:
+                avg_val_lpips_loss = total_val_lpips_loss / len(validation_dataloader)
+                val_logs["val_lpips_loss"] = avg_val_lpips_loss
 
     finally:
+        torch.cuda.empty_cache()
+
         # Restore original training state of the models
         unet.train()
         controlnet.train()
@@ -881,9 +916,20 @@ def parse_args(input_args=None):
         help="Set this flag to enable the merging of the embeddings using convolution->leaky_relu->convolution in the UNet."
     )
     parser.add_argument(
+        "--finetune_lr",
+        type=float,
+        default=5e-4,
+        help="Initial learning rate for newly added modules. Should typically be higher."
+    )
+    parser.add_argument(
         "--seesr_model_path", 
         type=str, 
         default=None
+    )
+    parser.add_argument(
+        "--use_sam2_loss",
+        action="store_true",
+        help="Whether to use SAM2 to compute the perceptual loss."
     )
     parser.add_argument(
         "--sam2_loss_weight", 
@@ -894,6 +940,17 @@ def parse_args(input_args=None):
         "--use_sam2", 
         action="store_true", 
         help="Whether to use SAM2 for image conditioning."
+    )
+    parser.add_argument(
+        "--use_lpips_loss",
+        action="store_true",
+        help="Whether to use LPIPS loss for training."
+    )
+    parser.add_argument(
+        "--lpips_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight for the LPIPS loss in the total loss calculation."
     )
     parser.add_argument(
         "--validation_data_dir",
@@ -1019,8 +1076,8 @@ text_encoder_cls = import_model_class_from_model_name_or_path(args.pretrained_mo
 noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
 noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.to(accelerator.device)
 
-# Text encoder (8 bit)
-text_encoder = text_encoder_cls.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, load_in_8bit=True, device_map={"": str(accelerator.device)})
+# Text encoder
+text_encoder = text_encoder_cls.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, device_map={"": str(accelerator.device)})
 
 # VAE
 vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision)
@@ -1033,10 +1090,14 @@ tiny_vae.enable_tiling()
 tiny_vae.enable_slicing()
 
 # SAM 2.1
-if args.use_sam2:
+if args.use_sam2 or args.use_sam2_loss:
     sam2 = load(apply_postprocessing=False, stability_score_thresh=0.5)
     sam2_image_encoder = sam2.predictor.model.image_encoder
     sam2_norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+if args.use_lpips_loss:
+    logger.info("Loading LPIPS loss model")
+    lpips_metric = pyiqa.create_metric("lpips", device=accelerator.device, as_loss=True)
 
 if args.unet_model_name_or_path:
     # resume from self-train
@@ -1048,7 +1109,6 @@ if args.unet_model_name_or_path:
         subfolder="unet", 
         revision=args.revision, 
         use_image_cross_attention=True,
-        # TODO: modifica qui
     )
 
     print(f'===== if use ram encoder? {unet.config.use_image_cross_attention}')
@@ -1062,7 +1122,8 @@ else:
         subfolder="unet", 
         use_image_cross_attention=True, 
         device_map=None, 
-        low_cpu_mem_usage=False
+        low_cpu_mem_usage=False,
+        revision=args.revision
     )
     
     print(f'===== if use ram encoder? {unet.config.use_image_cross_attention}')
@@ -1126,7 +1187,7 @@ vae.requires_grad_(False)
 tiny_vae.eval()
 tiny_vae.requires_grad_(False)
 
-if args.use_sam2:
+if args.use_sam2 or args.use_sam2_loss:
     sam2_image_encoder.eval()
     sam2_image_encoder.requires_grad_(False)
 
@@ -1281,6 +1342,8 @@ if args.enable_xformers_memory_efficient_attention:
         raise ValueError("xformers is not available. Make sure it is installed correctly")
 
 if args.gradient_checkpointing:
+    logger.info("Enabling gradient checkpointing.")
+
     unet.enable_gradient_checkpointing()
     controlnet.enable_gradient_checkpointing()
 
@@ -1323,27 +1386,75 @@ else:
     optimizer_class = torch.optim.AdamW
 
 # Optimizer creation
+# print(f'================= Optimize ControlNet and Unet ======================')
+
+# total_individual_params = sum(p.numel() for p in (list(controlnet.parameters()) + list(unet.parameters())))
+# params_to_optimize = [p for p in controlnet.parameters() if p.requires_grad] + [p for p in unet.parameters() if p.requires_grad]
+# trainable_tensors = len(params_to_optimize)
+# trainable_individual_params = sum(p.numel() for p in params_to_optimize)
+
+# print(f"Total Individual Parameters: {total_individual_params:,}")
+# print(f"Trainable (ControlNet + UNet) Parameters: {trainable_individual_params:,}\n")
+
+# print(f'start to load optimizer...')
+
+# # TODO: cambia optimizer e usa SGD
+# # lr non cambiare
+# optimizer = optimizer_class(
+#     params_to_optimize,
+#     lr=args.learning_rate,
+#     betas=(args.adam_beta1, args.adam_beta2),
+#     weight_decay=args.adam_weight_decay,
+#     eps=args.adam_epsilon,
+# )
+
+# Optimizer creation
 print(f'================= Optimize ControlNet and Unet ======================')
-
-total_individual_params = sum(p.numel() for p in (list(controlnet.parameters()) + list(unet.parameters())))
-params_to_optimize = [p for p in controlnet.parameters() if p.requires_grad] + [p for p in unet.parameters() if p.requires_grad]
-trainable_tensors = len(params_to_optimize)
-trainable_individual_params = sum(p.numel() for p in params_to_optimize)
-
-print(f"Total Individual Parameters: {total_individual_params:,}")
-print(f"Trainable (ControlNet + UNet) Parameters: {trainable_individual_params:,}\n")
-
 print(f'start to load optimizer...')
 
-# TODO: cambia optimizer e usa SGD
-# lr non cambiare
+new_module_params = []
+base_model_params = []
+new_module_keywords = ["fusion_conv"]
+
+params_to_optimize_full_list = list(controlnet.named_parameters()) + list(unet.named_parameters())
+
+for name, param in params_to_optimize_full_list:
+    if param.requires_grad:
+        if any(keyword in name for keyword in new_module_keywords):
+            new_module_params.append(param)
+        else:
+            base_model_params.append(param)
+
+num_new_params = sum(p.numel() for p in new_module_params)
+num_base_params = sum(p.numel() for p in base_model_params)
+print(f"Trainable Base Model Parameters: {num_base_params:,} (LR: {args.learning_rate})")
+print(f"Trainable New Module Parameters: {num_new_params:,} (LR: {args.finetune_lr})")
+print(f"Total Trainable Parameters: {num_base_params + num_new_params:,}\n")
+
+optimizer_grouped_parameters = [
+    {
+        "params": base_model_params,
+        "lr": args.learning_rate,
+    },
+    {
+        "params": new_module_params,
+        "lr": args.finetune_lr,
+    },
+]
+
+optimizer_grouped_parameters = [g for g in optimizer_grouped_parameters if g['params']]
+
+if not optimizer_grouped_parameters:
+    raise ValueError("No trainable parameters found. Check your --train_* flags.")
+
 optimizer = optimizer_class(
-    params_to_optimize,
-    lr=args.learning_rate,
+    optimizer_grouped_parameters,
     betas=(args.adam_beta1, args.adam_beta2),
     weight_decay=args.adam_weight_decay,
     eps=args.adam_epsilon,
 )
+
+params_to_optimize = base_model_params + new_module_params
 
 logger.info("Creating train dataloader...")
 train_dataset = PairedCaptionDataset(
@@ -1421,7 +1532,7 @@ elif accelerator.mixed_precision == "bf16":
 vae.to(accelerator.device, dtype=weight_dtype)
 tiny_vae.to(accelerator.device, dtype=weight_dtype)
 
-if args.use_sam2:
+if args.use_sam2 or args.use_sam2_loss:
     sam2_image_encoder.to(accelerator.device, dtype=weight_dtype)
 
 num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1528,37 +1639,62 @@ for epoch in range(first_epoch, args.num_train_epochs):
 
                 # Low resolution image that has been bicubic upsampled for the image encoder inside DAPE (384x384)
                 ram_encoder_hidden_states = batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
-            
+
                 # SAM2 Segmentation + image embeddings
                 sam2_segmentation_encoder_hidden_states = batch["sam2_seg_embeds"].to(accelerator.device, dtype=weight_dtype)
                 sam2_encoder_hidden_states = batch["sam2_img_embeds"].to(accelerator.device, dtype=weight_dtype)
 
-            # ControlNet
-            down_block_res_samples, mid_block_res_sample = controlnet(
-                noisy_latents,
-                timesteps,
-                encoder_hidden_states=encoder_hidden_states,
-                controlnet_cond=controlnet_image,
-                return_dict=False,
-                image_encoder_hidden_states=ram_encoder_hidden_states,
-                # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
-            )
+            if args.use_sam2:
+                # ControlNet
+                down_block_res_samples, mid_block_res_sample = controlnet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    controlnet_cond=controlnet_image,
+                    return_dict=False,
+                    image_encoder_hidden_states=ram_encoder_hidden_states,
+                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                )
 
-            # Predict the noise residual -> UNet
-            # model_pred -> Torch.Size([1, 4, 64, 64])
-            model_pred = unet(
-                noisy_latents,
-                timesteps,
-                encoder_hidden_states=encoder_hidden_states,
-                down_block_additional_residuals=[
-                    sample.to(dtype=weight_dtype) for sample in down_block_res_samples
-                ],
-                mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
-                image_encoder_hidden_states=ram_encoder_hidden_states,
-                # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
-            ).sample
+                # UNet
+                # model_pred [1, 4, 64, 64]
+                model_pred = unet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    down_block_additional_residuals=[
+                        sample.to(dtype=weight_dtype) for sample in down_block_res_samples
+                    ],
+                    mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
+                    image_encoder_hidden_states=ram_encoder_hidden_states,
+                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
+                ).sample
+
+            else:
+                # ControlNet
+                down_block_res_samples, mid_block_res_sample = controlnet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    controlnet_cond=controlnet_image,
+                    return_dict=False,
+                    image_encoder_hidden_states=ram_encoder_hidden_states,
+                )
+
+                # UNet
+                # model_pred [1, 4, 64, 64]
+                model_pred = unet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    down_block_additional_residuals=[
+                        sample.to(dtype=weight_dtype) for sample in down_block_res_samples
+                    ],
+                    mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
+                    image_encoder_hidden_states=ram_encoder_hidden_states,
+                ).sample
 
             ######################################################################################################
             # --- COMPUTATIONAL GRAPH DEBUG CHECK 1 ---
@@ -1583,7 +1719,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
                 
-            if args.use_sam2:
+            if args.use_sam2_loss or args.use_lpips_loss:
                 # Take the latent code of the GT image and convert it to the rgb image
                 ######################################################################################################
                 alphas_cumprod = noise_scheduler.alphas_cumprod
@@ -1614,27 +1750,31 @@ for epoch in range(first_epoch, args.num_train_epochs):
 
                 ######################################################################################################
 
-                sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
-                sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
+                if args.use_sam2_loss:
+                    sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
+                    sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
 
-                with torch.no_grad():
-                    gt_sam_input = sam2_norm(pixel_values).to(accelerator.device)
-                    gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
+                    with torch.no_grad():
+                        gt_sam_input = sam2_norm(pixel_values).to(accelerator.device)
+                        gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
 
-                semantic_loss = F.mse_loss(sr_embeds.float(), gt_embeds.float(), reduction="mean")
+                    semantic_loss = F.mse_loss(sr_embeds.float(), gt_embeds.float(), reduction="mean")
 
-                ######################################################################################################
-                # --- COMPUTATIONAL GRAPH DEBUG CHECK 3 ---
-                if step == 1:
-                    print("\n--- Semantic Loss grad_fn Check: Step 3 ---")
-                    print(f"    sr_rgb.grad_fn: {sr_rgb.grad_fn}")
-                    print(f"    sr_sam_input.grad_fn: {sr_sam_input.grad_fn}")
-                    print(f"    sr_embeds.grad_fn: {sr_embeds.grad_fn}")
-                    print(f"    semantic_loss.grad_fn: {semantic_loss.grad_fn}")
-                    print(f"    semantic_loss.requires_grad: {semantic_loss.requires_grad}")
-                    print("-" * 20)
-                
-                ######################################################################################################
+                    ######################################################################################################
+                    # --- COMPUTATIONAL GRAPH DEBUG CHECK 3 ---
+                    if step == 1:
+                        print("\n--- Semantic Loss grad_fn Check: Step 3 ---")
+                        print(f"    sr_rgb.grad_fn: {sr_rgb.grad_fn}")
+                        print(f"    sr_sam_input.grad_fn: {sr_sam_input.grad_fn}")
+                        print(f"    sr_embeds.grad_fn: {sr_embeds.grad_fn}")
+                        print(f"    semantic_loss.grad_fn: {semantic_loss.grad_fn}")
+                        print(f"    semantic_loss.requires_grad: {semantic_loss.requires_grad}")
+                        print("-" * 20)
+                    
+                    ######################################################################################################
+                if args.use_lpips_loss:
+                    gt_rgb = (pixel_values.to(torch.float32) + 1.0) / 2.0
+                    lpips_loss = lpips_metric(sr_rgb.to(torch.float32), gt_rgb)
 
             diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
             # diffusion_loss = F.l1_loss(model_pred.float(), target.float(), reduction="mean")
@@ -1649,8 +1789,12 @@ for epoch in range(first_epoch, args.num_train_epochs):
             
             ######################################################################################################
 
-            if args.use_sam2:
+            if args.use_sam2_loss:
                 loss = diffusion_loss + args.sam2_loss_weight * semantic_loss
+
+            elif args.use_lpips_loss:
+                loss = diffusion_loss + args.lpips_loss_weight * lpips_loss
+
             else:
                 loss = diffusion_loss
             
@@ -1709,12 +1853,20 @@ for epoch in range(first_epoch, args.num_train_epochs):
 
                     validation_loss = val_logs["val_loss"]
 
-        if args.use_sam2:
+        if args.use_sam2_loss:
             logs = {"loss/train": loss.detach().item(), "loss/train_diffusion": diffusion_loss.detach().item(), "loss/train_semantic": semantic_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
 
             if validation_loss is not None:
                 logger.info(f"validation_loss: {validation_loss:.4f}")
                 logs["loss/validation"] = validation_loss
+
+        elif args.use_lpips_loss:
+            logs = {"loss/train": loss.detach().item(), "loss/train_diffusion": diffusion_loss.detach().item(), "loss/train_lpips": lpips_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+
+            if validation_loss is not None:
+                logger.info(f"validation_loss: {validation_loss:.4f}")
+                logs["loss/validation"] = validation_loss
+                
         else:
             logs = {"loss/train": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
 
