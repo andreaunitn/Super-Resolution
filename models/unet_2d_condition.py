@@ -944,7 +944,6 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     cross_attention_kwargs=cross_attention_kwargs,
                     encoder_attention_mask=encoder_attention_mask,
                     image_encoder_hidden_states=image_encoder_hidden_states,
-                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                     sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                     **additional_residuals,
                 )
@@ -977,7 +976,6 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 cross_attention_kwargs=cross_attention_kwargs,
                 encoder_attention_mask=encoder_attention_mask,
                 image_encoder_hidden_states=image_encoder_hidden_states,
-                sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                 sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
             )
             # To support T2I-Adapter-XL
@@ -1014,7 +1012,6 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     attention_mask=attention_mask,
                     encoder_attention_mask=encoder_attention_mask,
                     image_encoder_hidden_states=image_encoder_hidden_states,
-                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                     sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                 )
             else:

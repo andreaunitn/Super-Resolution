@@ -2,7 +2,7 @@
 
 # Paths
 PRETRAINED_MODEL_PATH="preset/models/stable-diffusion-2-base"
-SEESR_MODEL_PATH="preset/models/seesr"
+SEESR_MODEL_PATH="preset/train_output/LSDIR/Intermediate_2_prova/checkpoint-1000"
 TINY_VAE_PATH="preset/models/tiny_vae"
 OUTPUT_DIR="preset/train_output/LSDIR"
 ROOT_FOLDERS="preset/datasets/train_datasets/LSDIR"
@@ -10,20 +10,20 @@ RAM_FT_PATH="preset/models/DAPE.pth"
 VALIDATION_PATH="preset/datasets/test_datasets/RealSR/test_LR/Canon_004_LR4.png"
 
 # Hyperparameters
-LEARNING_RATE=5e-6
-FINETUNE_LR=5e-5
+LEARNING_RATE=1e-6
+FINETUNE_LR=5e-6
 TRAIN_BATCH_SIZE=1
 GRAD_ACCUM_STEPS=4
-MAX_TRAIN_STEPS=7500
-CHECKPOINTING_STEPS=500
-NULL_TEXT_RATIO=0.5
+MAX_TRAIN_STEPS=1000    
+CHECKPOINTING_STEPS=250
+NULL_TEXT_RATIO=0.5 
 RESOLUTION=512
 DATALOADER_WORKERS=0
 CUDA_DEVICES="0"
 SAM_LOSS_WEIGHT=1
-LR_WARMUP_STEPS=500
+LR_WARMUP_STEPS=50
 LR_SCHEDULER="constant_with_warmup"
-VALIDATION_STEPS=250
+VALIDATION_STEPS=100
 VALIDATION_PROMPT=""
 PRECISION="bf16"
 RESUME_CHECKPOINT="latest"
@@ -57,6 +57,7 @@ do
       --null_text_ratio=$NULL_TEXT_RATIO \
       --dataloader_num_workers=$DATALOADER_WORKERS \
       --checkpointing_steps=$CHECKPOINTING_STEPS \
+      --resume_from_checkpoint="$RESUME_CHECKPOINT" \
       --gradient_checkpointing \
       --use_8bit_adam \
       --allow_tf32 \
@@ -66,11 +67,12 @@ do
       --validation_image="$VALIDATION_PATH" \
       --validation_prompt="$VALIDATION_PROMPT" \
       --generate_validation_image \
-      --resume_from_checkpoint="$RESUME_CHECKPOINT" \
-      --train_controlnet_dape_attention \
       --train_controlnet_fusion_conv \
-      --train_unet_dape_attention \
+      --train_controlnet_dape_attention \
+      --train_controlnet_sam2_attention \
       --train_unet_fusion_conv \
+      --train_unet_dape_attention \
+      --train_unet_sam2_attention \
       --use_sam2 \
 
     EXIT_CODE=$?

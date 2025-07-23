@@ -316,6 +316,7 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
         ram_encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        sam2_segmentation_encoder_hidden_states: Optional[torch.FloatTensor] = None,
     ):
         r"""
         Encodes the prompt into text encoder hidden states.
@@ -451,8 +452,9 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
             # to avoid doing two forward passes
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
             ram_encoder_hidden_states = torch.cat([ram_encoder_hidden_states, ram_encoder_hidden_states])
+            sam2_segmentation_encoder_hidden_states = torch.cat([sam2_segmentation_encoder_hidden_states, sam2_segmentation_encoder_hidden_states])
 
-        return prompt_embeds, ram_encoder_hidden_states
+        return prompt_embeds, ram_encoder_hidden_states, sam2_segmentation_encoder_hidden_states
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.run_safety_checker
     def run_safety_checker(self, image, device, dtype):
@@ -806,8 +808,7 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
         start_steps = 999,
         start_point = 'noise',
         ram_encoder_hidden_states=None,
-        # sam2_encoder_hidden_states=None,
-        # sam2_segmentation_encoder_hidden_states=None,
+        sam2_segmentation_encoder_hidden_states=None,
         latent_tiled_size=320,
         latent_tiled_overlap=4,
         args=None
@@ -944,7 +945,7 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
         """
 
         # 3. Encode input prompt
-        prompt_embeds, ram_encoder_hidden_states = self._encode_prompt(
+        prompt_embeds, ram_encoder_hidden_states, sam2_segmentation_encoder_hidden_states = self._encode_prompt(
             prompt,
             device,
             num_images_per_prompt,
@@ -952,18 +953,9 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
             negative_prompt,
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
-            ram_encoder_hidden_states=ram_encoder_hidden_states
+            ram_encoder_hidden_states=ram_encoder_hidden_states,
+            sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
         )
-
-        # if do_classifier_free_guidance:
-        #     if sam2_encoder_hidden_states is not None:
-        #         # Ensure correct dimensions (B, N, C) -> (B, 1, C)
-        #         if sam2_encoder_hidden_states.ndim == 2:
-        #             sam2_encoder_hidden_states = sam2_encoder_hidden_states.unsqueeze(1)
-        #         sam2_encoder_hidden_states = torch.cat([sam2_encoder_hidden_states] * 2)
-            
-        #     if sam2_segmentation_encoder_hidden_states is not None:
-        #         sam2_segmentation_encoder_hidden_states = torch.cat([sam2_segmentation_encoder_hidden_states] * 2)
 
         # 4. Prepare image
         image = self.prepare_image(
@@ -1051,8 +1043,7 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
                         guess_mode=guess_mode,
                         return_dict=False,
                         image_encoder_hidden_states = ram_encoder_hidden_states,
-                        # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                        # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                        sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                     )
 
 
@@ -1072,9 +1063,8 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
                         down_block_additional_residuals=down_block_res_samples,
                         mid_block_additional_residual=mid_block_res_sample,
                         return_dict=False,
-                        image_encoder_hidden_states = ram_encoder_hidden_states,
-                        # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                        # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                        image_encoder_hidden_states=ram_encoder_hidden_states,
+                        sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                     )[0]
                 else:
                     tile_weights = self._gaussian_weights(tile_size, tile_size, 1)
@@ -1138,8 +1128,7 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
                                     guess_mode=guess_mode,
                                     return_dict=False,
                                     image_encoder_hidden_states = ram_encoder_hidden_states,
-                                    # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                                    # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                                 )
 
                                 if guess_mode and do_classifier_free_guidance:
@@ -1159,8 +1148,7 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
                                     mid_block_additional_residual=mid_block_res_sample,
                                     return_dict=False,
                                     image_encoder_hidden_states = ram_encoder_hidden_states,
-                                    # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
-                                    # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                                 )[0]
 
                                 #for sample_i in range(model_out.size(0)):
@@ -1202,8 +1190,6 @@ class StableDiffusionControlNetPipeline(DiffusionPipeline, TextualInversionLoade
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]

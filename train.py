@@ -73,7 +73,6 @@ def copy_dape_to_sam2_weights(model, accelerator):
     Initializes ALL weights of the sam2 attention modules by copying or slicing 
     from the pre-trained dape (image_attentions) modules.
     """
-
     logger.info(f"Attempting to copy DAPE weights to SAM2 modules for {model.__class__.__name__}...")
     
     model_to_copy = accelerator.unwrap_model(model)
@@ -81,101 +80,124 @@ def copy_dape_to_sam2_weights(model, accelerator):
     def transfer_weights(source_attention_module, target_attention_module, block_name, target_name):
         source_sd = source_attention_module.state_dict()
         target_sd = target_attention_module.state_dict()
-        
         new_target_sd = {}
         
         for key, target_param in target_sd.items():
-            if key not in source_sd:
-                logger.warning(f"  - Key '{key}' not found in source module. Keeping random init for {block_name}.{target_name}")
-                new_target_sd[key] = target_param.clone()
-                continue
-            
-            source_param = source_sd[key]
-            
-            # Shapes match, it's a direct copy
-            if source_param.shape == target_param.shape:
-                logger.info(f"  - Copying weight for '{key}' in {block_name}.{target_name}")
-                new_target_sd[key] = source_param.clone()
-
-            # Shapes mismatch, cross-attention projection layer.
-            else:
-                # Linear layer weights: [out_features, in_features]
-                if target_param.dim() > 1 and source_param.shape[0] == target_param.shape[0]:
+            if key in source_sd:
+                source_param = source_sd[key]
+                if source_param.shape == target_param.shape:
+                    logger.info(f"  - Copying weight for '{key}' in {block_name}.{target_name}")
+                    new_target_sd[key] = source_param.clone()
+                elif target_param.dim() > 1 and source_param.shape[0] == target_param.shape[0]: # Linear layer weights
                     logger.info(f"  - Slicing weight for '{key}' in {block_name}.{target_name}")
                     slice_dim = target_param.shape[1]
                     new_target_sd[key] = source_param[:, :slice_dim].clone()
-
-                # Bias terms
-                elif target_param.dim() == 1 and source_param.shape[0] > target_param.shape[0]:
-                     logger.warning(f"  - Mismatched bias term '{key}' in {block_name}.{target_name}. This is unusual.")
-                     slice_dim = target_param.shape[0]
-                     new_target_sd[key] = source_param[:slice_dim].clone()
                 else:
-                    logger.error(f"  - UNHANDLED MISMATCH for '{key}' in {block_name}.{target_name}. "
-                                 f"Source: {source_param.shape}, Target: {target_param.shape}. Keeping random init.")
+                    logger.error(f"  - UNHANDLED SHAPE MISMATCH for '{key}' in {block_name}.{target_name}. Keeping random init.")
                     new_target_sd[key] = target_param.clone()
+            else:
+                logger.warning(f"  - Key '{key}' not found in source module. Keeping random init for {block_name}.{target_name}")
+                new_target_sd[key] = target_param.clone()
 
         target_attention_module.load_state_dict(new_target_sd)
 
     for block_name, block in model_to_copy.named_modules():
-        if isinstance(block, (CrossAttnDownBlock2D, CrossAttnUpBlock2D, UNetMidBlock2DCrossAttn)) and hasattr(block, 'use_image_cross_attention') and block.use_image_cross_attention:
+        if isinstance(block, (CrossAttnDownBlock2D, CrossAttnUpBlock2D, UNetMidBlock2DCrossAttn)) and hasattr(block, 'use_sam2') and block.use_sam2:
             logger.info(f"Processing block: {block_name}")
             
-            if isinstance(block, UNetMidBlock2DCrossAttn):
-                source_attns = block.attentions
-                target_sam_image_attns = block.image_attentions
-                target_sam_seg_attns = block.sam2_segmentation_attentions
-            else:
+            if hasattr(block, 'image_attentions') and hasattr(block, 'sam2_segmentation_attentions'):
                 source_attns = block.image_attentions
-                target_sam_image_attns = block.sam2_image_attentions
                 target_sam_seg_attns = block.sam2_segmentation_attentions
 
-            for i in range(len(source_attns)):
-                source_module = source_attns[i]
-                
-                target_img_module = target_sam_image_attns[i]
-                transfer_weights(source_module, target_img_module, block_name, f"sam2_image_attentions.{i}")
-                
-                target_seg_module = target_sam_seg_attns[i]
-                transfer_weights(source_module, target_seg_module, block_name, f"sam2_segmentation_attentions.{i}")
+                num_modules_to_copy = min(len(source_attns), len(target_sam_seg_attns))
+                if len(source_attns) != len(target_sam_seg_attns):
+                    logger.warning(f"  - Mismatch in number of attention modules in {block_name}. Will copy {num_modules_to_copy} modules.")
+
+                for i in range(num_modules_to_copy):
+                    source_module = source_attns[i]
+                    target_seg_module = target_sam_seg_attns[i]
+                    transfer_weights(source_module, target_seg_module, block_name, f"sam2_segmentation_attentions.{i}")
 
     logger.info(f"Finished copying weights for {model.__class__.__name__}.")
 
 def verify_weights(accelerator, model):
+    if not accelerator.is_main_process:
+        return
 
-    if accelerator.is_main_process:
-        logger.info("--- STARTING WEIGHT VERIFICATION ---")
-        try:
-            unwrapped_model = accelerator.unwrap_model(model)
+    logger.info(f"--- STARTING WEIGHT VERIFICATION FOR {model.__class__.__name__} ---")
+    verification_passed = True
+    
+    try:
+        unwrapped_model = accelerator.unwrap_model(model)
+        
+        # Iterate through all blocks that contain the attention modules
+        for block_name, block in unwrapped_model.named_modules():
+            is_relevant_block = isinstance(block, (CrossAttnDownBlock2D, CrossAttnUpBlock2D, UNetMidBlock2DCrossAttn))
             
-            source_module = unwrapped_model.down_blocks[0].image_attentions[0].transformer_blocks[0].attn2
-            target_module = unwrapped_model.down_blocks[0].sam2_image_attentions[0].transformer_blocks[0].attn2
+            if is_relevant_block and hasattr(block, 'image_attentions') and hasattr(block, 'sam2_segmentation_attentions'):
+                logger.info(f"Verifying weights for block: {block_name}")
 
-            source_weight = source_module.to_k.weight.detach()
-            target_dim = target_module.to_k.weight.shape[1]
-            source_slice = source_weight[:, :target_dim]
+                source_attns = block.image_attentions
+                target_seg_attns = block.sam2_segmentation_attentions
+                
+                num_modules_to_verify = min(len(source_attns), len(target_seg_attns))
 
-            target_weight_after_copy = target_module.to_k.weight.detach()
+                for i in range(num_modules_to_verify):
+                    source_transformer = source_attns[i]
+                    target_transformer = target_seg_attns[i]
 
-            # Perform the check
-            are_equal = torch.allclose(source_slice, target_weight_after_copy)
-            
-            logger.info(f"Source weight shape: {source_weight.shape}")
-            logger.info(f"Target weight shape: {target_weight_after_copy.shape}")
-            logger.info(f"Verification Check: Target weight successfully initialized from source slice? -> {are_equal}")
+                    # Iterate through every parameter in the source and target transformers
+                    # This makes the check robust to any internal changes in Transformer2DModel
+                    source_params = dict(source_transformer.named_parameters())
+                    target_params = dict(target_transformer.named_parameters())
 
-            if not are_equal:
-                logger.error("VERIFICATION FAILED! Weights were not copied correctly.")
-                diff = torch.abs(source_slice - target_weight_after_copy).max()
-                logger.error(f"Max absolute difference: {diff.item()}")
-            else:
-                logger.info("VERIFICATION PASSED! Weights copied successfully.")
+                    for param_name, target_param in target_params.items():
+                        if param_name not in source_params:
+                            logger.error(f"  - FAILED: Parameter '{param_name}' not found in source module. Verification incomplete.")
+                            verification_passed = False
+                            continue
 
-        except Exception as e:
-            logger.error(f"An exception occurred during weight verification: {e}")
-            logger.error("This might be due to an incorrect module path. Check your model structure.")
-            
-        logger.info("--- WEIGHT VERIFICATION COMPLETE ---")
+                        source_param = source_params[param_name].detach()
+                        target_param = target_param.detach()
+
+                        # Check if slicing is needed (for cross-attention projection layers)
+                        if source_param.shape != target_param.shape:
+                            if target_param.dim() > 1 and source_param.shape[0] == target_param.shape[0]: # Linear weights
+                                slice_dim = target_param.shape[1]
+                                source_slice = source_param[:, :slice_dim]
+                            elif target_param.dim() == 1: # Bias terms
+                                slice_dim = target_param.shape[0]
+                                source_slice = source_param[:slice_dim]
+                            else: # Unhandled case
+                                logger.error(f"  - FAILED: Unhandled shape mismatch for '{param_name}'. "
+                                             f"Source: {source_param.shape}, Target: {target_param.shape}")
+                                verification_passed = False
+                                continue
+                        else: # Shapes match, direct comparison
+                            source_slice = source_param
+
+                        # Perform the check
+                        are_equal = torch.allclose(source_slice, target_param, atol=1e-6)
+                        
+                        if are_equal:
+                            logger.info(f"  - PASSED: Verification for '{param_name}' in sam2_segmentation_attentions.{i}")
+                        else:
+                            logger.error(f"  - FAILED: Verification for '{param_name}' in sam2_segmentation_attentions.{i}")
+                            diff = torch.abs(source_slice - target_param).max().item()
+                            logger.error(f"    - Max absolute difference: {diff:.6f}")
+                            verification_passed = False
+
+    except Exception as e:
+        logger.error(f"An exception occurred during weight verification: {e}")
+        logger.error("This might be due to an incorrect module path or model structure change. Check your model.")
+        verification_passed = False
+        
+    if verification_passed:
+        logger.info("--- OVERALL VERIFICATION RESULT: PASSED ---")
+    else:
+        logger.error("--- OVERALL VERIFICATION RESULT: FAILED ---")
+        
+    logger.info(f"--- WEIGHT VERIFICATION COMPLETE FOR {model.__class__.__name__} ---")
 
 def image_grid(imgs, rows, cols):
 
@@ -306,7 +328,6 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
                             controlnet_cond=controlnet_image,
                             return_dict=False, 
                             image_encoder_hidden_states=ram_encoder_hidden_states,
-                            sam2_encoder_hidden_states=sam2_encoder_hidden_states, 
                             sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                         )
                         
@@ -317,7 +338,6 @@ def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weigh
                             down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
                             mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
                             image_encoder_hidden_states=ram_encoder_hidden_states,
-                            sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                             sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
                         ).sample
 
@@ -1091,7 +1111,7 @@ tiny_vae.enable_slicing()
 
 # SAM 2.1
 if args.use_sam2 or args.use_sam2_loss:
-    sam2 = load(apply_postprocessing=False, stability_score_thresh=0.5)
+    sam2 = load(apply_postprocessing=False, stability_score_thresh=0.9)
     sam2_image_encoder = sam2.predictor.model.image_encoder
     sam2_norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
@@ -1187,7 +1207,7 @@ vae.requires_grad_(False)
 tiny_vae.eval()
 tiny_vae.requires_grad_(False)
 
-if args.use_sam2 or args.use_sam2_loss:
+if args.use_sam2_loss:
     sam2_image_encoder.eval()
     sam2_image_encoder.requires_grad_(False)
 
@@ -1253,12 +1273,12 @@ if args.train_controlnet_sam2_attention:
     trainable_module_found = False
 
     for name, module in controlnet.named_modules():
-        if "sam2" in name:
+        if name.endswith("sam2_image_attentions") or name.endswith("sam2_segmentation_attentions"):
             for params in module.parameters():
                 params.requires_grad = True
 
             if not trainable_module_found:
-                print("Found trainable modules in UNet:")
+                print("Found trainable modules in ControlNet:")
             print(f'  - {name}')
             trainable_module_found = True
             
@@ -1266,7 +1286,7 @@ if args.train_unet_sam2_attention:
     trainable_module_found = False
 
     for name, module in unet.named_modules():
-        if "sam2" in name:
+        if name.endswith("sam2_image_attentions") or name.endswith("sam2_segmentation_attentions"):
             for params in module.parameters():
                 params.requires_grad = True
 
@@ -1414,7 +1434,7 @@ print(f'start to load optimizer...')
 
 new_module_params = []
 base_model_params = []
-new_module_keywords = ["fusion_conv"]
+new_module_keywords = ["fusion_conv", "sam2_segmentation_attentions"]
 
 params_to_optimize_full_list = list(controlnet.named_parameters()) + list(unet.named_parameters())
 
@@ -1512,13 +1532,12 @@ else:
         controlnet, unet, optimizer, train_dataloader, lr_scheduler
     )
 
-# if args.use_sam2:
-#     # TODO: verify that is correct
-#     copy_dape_to_sam2_weights(unet, accelerator)
-#     copy_dape_to_sam2_weights(controlnet, accelerator)
+if args.use_sam2:
+    copy_dape_to_sam2_weights(unet, accelerator)
+    copy_dape_to_sam2_weights(controlnet, accelerator)
 
-#     verify_weights(accelerator, controlnet)
-#     verify_weights(accelerator, unet)
+    verify_weights(accelerator, controlnet)
+    verify_weights(accelerator, unet)
 
 # For mixed precision training we cast the text_encoder and vae weights to half-precision
 # as these models are only used for inference, keeping weights in full precision is not required.
@@ -1653,7 +1672,6 @@ for epoch in range(first_epoch, args.num_train_epochs):
                     controlnet_cond=controlnet_image,
                     return_dict=False,
                     image_encoder_hidden_states=ram_encoder_hidden_states,
-                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                     sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                 )
 
@@ -1668,7 +1686,6 @@ for epoch in range(first_epoch, args.num_train_epochs):
                     ],
                     mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
                     image_encoder_hidden_states=ram_encoder_hidden_states,
-                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                     sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
                 ).sample
 
@@ -1837,21 +1854,21 @@ for epoch in range(first_epoch, args.num_train_epochs):
                     accelerator.save_state(save_path)
                     logger.info(f"Saved state to {save_path}")
 
-                if args.validation_prompt is not None and global_step % args.validation_steps == 0:
-                    val_logs = log_validation(
-                        vae,
-                        text_encoder,
-                        unet,
-                        controlnet,
-                        args,
-                        accelerator,
-                        weight_dtype,
-                        validation_dataloader,
-                        tokenizer,
-                        global_step,
-                    )
+                # if args.validation_prompt is not None and global_step % args.validation_steps == 0:
+                #     val_logs = log_validation(
+                #         vae,
+                #         text_encoder,
+                #         unet,
+                #         controlnet,
+                #         args,
+                #         accelerator,
+                #         weight_dtype,
+                #         validation_dataloader,
+                #         tokenizer,
+                #         global_step,
+                #     )
 
-                    validation_loss = val_logs["val_loss"]
+                #     validation_loss = val_logs["val_loss"]
 
         if args.use_sam2_loss:
             logs = {"loss/train": loss.detach().item(), "loss/train_diffusion": diffusion_loss.detach().item(), "loss/train_semantic": semantic_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
@@ -1903,13 +1920,13 @@ if accelerator.is_main_process:
             ignore_patterns=["step_*", "epoch_*"],
         )
 
-    validation_images_list = glob.glob(os.path.join(args.output_dir + "/validation_samples", "*.png"))
-    validation_images_list.sort(key=lambda f: int(os.path.basename(f).split('_')[1].split('.')[0]))
-    validation_images = []
-    for path in validation_images_list:
-        img = Image.open(path).convert("RGB")
-        validation_images.append(img)
+    # validation_images_list = glob.glob(os.path.join(args.output_dir + "/validation_samples", "*.png"))
+    # validation_images_list.sort(key=lambda f: int(os.path.basename(f).split('_')[1].split('.')[0]))
+    # validation_images = []
+    # for path in validation_images_list:
+    #     img = Image.open(path).convert("RGB")
+    #     validation_images.append(img)
 
-    image_grid(validation_images, 1, len(validation_images)).save(os.path.join(args.output_dir, "validation_samples/grid.png"))
+    # image_grid(validation_images, 1, len(validation_images)).save(os.path.join(args.output_dir, "validation_samples/grid.png"))
 
 accelerator.end_training()

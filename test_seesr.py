@@ -27,11 +27,14 @@ from utils.wavelet_color_fix import wavelet_color_fix, adain_color_fix
 from ram.models.ram_lora import ram
 from ram import inference_ram as inference
 
+from utils_data.sam2_processing import load, get_mask_logits_from_anns
+
 from typing import Mapping, Any
 from torchvision import transforms
 import torch.nn as nn
-import torch.nn.functional as F
 from torchvision import transforms
+
+import numpy as np
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -70,7 +73,7 @@ def load_seesr_pipeline(args, accelerator, enable_xformers_memory_efficient_atte
     from models.unet_2d_condition import UNet2DConditionModel
 
     # Load scheduler, tokenizer and models.
-    
+
     scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_path, subfolder="scheduler")
     text_encoder = CLIPTextModel.from_pretrained(args.pretrained_model_path, subfolder="text_encoder")
     tokenizer = CLIPTokenizer.from_pretrained(args.pretrained_model_path, subfolder="tokenizer")
@@ -78,6 +81,7 @@ def load_seesr_pipeline(args, accelerator, enable_xformers_memory_efficient_atte
     feature_extractor = CLIPImageProcessor.from_pretrained(f"{args.pretrained_model_path}/feature_extractor")
     unet = UNet2DConditionModel.from_pretrained(args.finetuned_model_path, subfolder="unet")
     controlnet = ControlNetModel.from_pretrained(args.finetuned_model_path, subfolder="controlnet")
+    
     
     # Freeze vae and text_encoder
     vae.requires_grad_(False)
@@ -126,6 +130,35 @@ def load_tag_model(args, device='cuda'):
     model.to(device)
     
     return model
+
+def load_sam2_model():
+    sam2_model = load(
+        model_size="large",
+        points_per_side=16,
+        points_per_batch=128,
+        stability_score_thresh=0.9,
+        )
+    
+    return sam2_model
+
+def get_sam2_segmentation_hidden_states(image, model):
+    image = np.array(image)
+    masks = model.generate(image)
+    masks = sorted(masks, key=lambda x: x['area'], reverse=True)
+
+    model.predictor.set_image(image)
+    logits = get_mask_logits_from_anns(model, masks)
+
+    if isinstance(logits, list):
+        logits = torch.stack(logits, dim=0)
+
+    if logits.ndim == 4 and logits.shape[0] > 1:
+        logits = logits.permute(1, 0, 2, 3) 
+    
+    elif logits.ndim == 3:
+        logits = logits.unsqueeze(0)
+
+    return logits
     
 def get_validation_prompt(args, image, model, device='cuda'):
     validation_prompt = ""
@@ -162,6 +195,7 @@ def main(args, enable_xformers_memory_efficient_attention=True,):
 
     pipeline = load_seesr_pipeline(args, accelerator, enable_xformers_memory_efficient_attention)
     model = load_tag_model(args, accelerator.device)
+    sam2_model = load_sam2_model()
  
     if accelerator.is_main_process:
         generator = torch.Generator(device=accelerator.device)
@@ -180,6 +214,8 @@ def main(args, enable_xformers_memory_efficient_attention=True,):
             validation_prompt, ram_encoder_hidden_states = get_validation_prompt(args, validation_image, model)
             validation_prompt += args.added_prompt # clean, extremely detailed, best quality, sharp, clean
             negative_prompt = args.negative_prompt # dirty, messy, low quality, frames, deformed,
+
+            sam2_segmentation_encoder_hidden_states = get_sam2_segmentation_hidden_states(validation_image, sam2_model)
             
             if args.save_prompts:
                 txt_save_path = f"{txt_path}/{os.path.basename(image_name).split('.')[0]}.txt"
@@ -215,6 +251,7 @@ def main(args, enable_xformers_memory_efficient_attention=True,):
                             validation_prompt, validation_image, num_inference_steps=args.num_inference_steps, generator=generator, height=height, width=width,
                             guidance_scale=args.guidance_scale, negative_prompt=negative_prompt, conditioning_scale=args.conditioning_scale,
                             start_point=args.start_point, ram_encoder_hidden_states=ram_encoder_hidden_states,
+                            sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                             latent_tiled_size=args.latent_tiled_size, latent_tiled_overlap=args.latent_tiled_overlap,
                             args=args,
                         ).images[0]

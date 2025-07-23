@@ -110,7 +110,7 @@ class PairedCaptionDataset(data.Dataset):
 
         example["ram_values"] = torch.load(self.dape_img_embeds_list[index]).squeeze(0)
         example["sam2_img_embeds"] = torch.load(self.sam2_img_embeds_list[index]).squeeze(0)
-        example["sam2_seg_embeds"] = torch.load(self.sam2_seg_emebds_list[index])
+        example["sam2_seg_embeds"] = torch.load(self.sam2_seg_emebds_list[index]).squeeze(1)
         example["sam2_gt_seg"] = torch.load(self.gt_seg_list[index])
 
         if self.validation:
