@@ -1,3 +1,6 @@
+import sys
+sys.path.append("ram/models")
+
 from ram.models.ram_lora import ram
 
 from PIL import Image

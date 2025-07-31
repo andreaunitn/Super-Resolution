@@ -68,32 +68,38 @@ ram_transforms = transforms.Compose([
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
-def copy_dape_to_sam2_weights(model, accelerator):
+def copy_dape_to_sam2_weights(args, model, accelerator):
     """
-    Initializes ALL weights of the sam2 attention modules by copying or slicing 
-    from the pre-trained dape (image_attentions) modules.
+    Initializes ALL SAM2-related attention modules (image and segmentation) by copying or
+    slicing from the pre-trained dape (image_attentions) modules.
     """
-    logger.info(f"Attempting to copy DAPE weights to SAM2 modules for {model.__class__.__name__}...")
-    
+    logger.info(f"Attempting to copy DAPE weights to all SAM2 modules for {model.__class__.__name__}...")
+
     model_to_copy = accelerator.unwrap_model(model)
-    
+
     def transfer_weights(source_attention_module, target_attention_module, block_name, target_name):
         source_sd = source_attention_module.state_dict()
         target_sd = target_attention_module.state_dict()
         new_target_sd = {}
-        
+
         for key, target_param in target_sd.items():
             if key in source_sd:
                 source_param = source_sd[key]
                 if source_param.shape == target_param.shape:
-                    logger.info(f"  - Copying weight for '{key}' in {block_name}.{target_name}")
+                    # logger.info(f"  - Copying weight for '{key}' in {block_name}.{target_name}")
                     new_target_sd[key] = source_param.clone()
-                elif target_param.dim() > 1 and source_param.shape[0] == target_param.shape[0]: # Linear layer weights
-                    logger.info(f"  - Slicing weight for '{key}' in {block_name}.{target_name}")
-                    slice_dim = target_param.shape[1]
-                    new_target_sd[key] = source_param[:, :slice_dim].clone()
+                # Handle linear layer weights and biases that might need slicing
+                elif target_param.dim() > 0 and source_param.shape[0] == target_param.shape[0]:
+                    # logger.info(f"  - Slicing weight for '{key}' in {block_name}.{target_name}")
+                    if target_param.dim() > 1: # Weight matrix
+                        slice_dim = target_param.shape[1]
+                        new_target_sd[key] = source_param[:, :slice_dim].clone()
+                    else: # Bias vector
+                        slice_dim = target_param.shape[0]
+                        new_target_sd[key] = source_param[:slice_dim].clone()
                 else:
-                    logger.error(f"  - UNHANDLED SHAPE MISMATCH for '{key}' in {block_name}.{target_name}. Keeping random init.")
+                    logger.error(f"  - UNHANDLED SHAPE MISMATCH for '{key}' in {block_name}.{target_name}. "
+                                 f"Source: {source_param.shape}, Target: {target_param.shape}. Keeping random init.")
                     new_target_sd[key] = target_param.clone()
             else:
                 logger.warning(f"  - Key '{key}' not found in source module. Keeping random init for {block_name}.{target_name}")
@@ -102,25 +108,46 @@ def copy_dape_to_sam2_weights(model, accelerator):
         target_attention_module.load_state_dict(new_target_sd)
 
     for block_name, block in model_to_copy.named_modules():
-        if isinstance(block, (CrossAttnDownBlock2D, CrossAttnUpBlock2D, UNetMidBlock2DCrossAttn)) and hasattr(block, 'use_sam2') and block.use_sam2:
-            logger.info(f"Processing block: {block_name}")
+        is_relevant_block = isinstance(block, (CrossAttnDownBlock2D, CrossAttnUpBlock2D, UNetMidBlock2DCrossAttn))
+        
+        if is_relevant_block and hasattr(block, 'use_sam2') and block.use_sam2:
+            # logger.info(f"Processing block: {block_name}")
             
-            if hasattr(block, 'image_attentions') and hasattr(block, 'sam2_segmentation_attentions'):
-                source_attns = block.image_attentions
-                target_sam_seg_attns = block.sam2_segmentation_attentions
+            if not hasattr(block, 'image_attentions'):
+                logger.warning(f"  - Block {block_name} is SAM2-enabled but has no 'image_attentions' to copy from. Skipping.")
+                continue
 
-                num_modules_to_copy = min(len(source_attns), len(target_sam_seg_attns))
-                if len(source_attns) != len(target_sam_seg_attns):
-                    logger.warning(f"  - Mismatch in number of attention modules in {block_name}. Will copy {num_modules_to_copy} modules.")
+            source_attns = block.image_attentions
+            
+            # List of target attention modules to initialize
+            if args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention:
+                target_attribute_names = ["sam2_image_attentions"]
+            elif (args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) and (args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention):
+                target_attribute_names = ["sam2_image_attentions", "sam2_segmentation_attentions"]
 
-                for i in range(num_modules_to_copy):
-                    source_module = source_attns[i]
-                    target_seg_module = target_sam_seg_attns[i]
-                    transfer_weights(source_module, target_seg_module, block_name, f"sam2_segmentation_attentions.{i}")
+            for target_attr_name in target_attribute_names:
+                if hasattr(block, target_attr_name):
+                    target_attns = getattr(block, target_attr_name)
+                    # logger.info(f"  -> Found target modules to initialize: '{target_attr_name}'")
+
+                    num_modules_to_copy = min(len(source_attns), len(target_attns))
+                    if len(source_attns) != len(target_attns):
+                        logger.warning(f"     - Mismatch in number of attention modules between source ('image_attentions') and target ('{target_attr_name}'). "
+                                       f"Will copy {num_modules_to_copy} modules.")
+
+                    for i in range(num_modules_to_copy):
+                        source_module = source_attns[i]
+                        target_module = target_attns[i]
+                        full_target_name = f"{target_attr_name}.{i}"
+                        transfer_weights(source_module, target_module, block_name, full_target_name)
 
     logger.info(f"Finished copying weights for {model.__class__.__name__}.")
 
-def verify_weights(accelerator, model):
+def verify_weights(args, accelerator, model):
+    """
+    Verifies that ALL SAM2-related attention modules (image and segmentation) have been
+    correctly initialized from the pre-trained dape (image_attentions) modules.
+    """
     if not accelerator.is_main_process:
         return
 
@@ -134,58 +161,68 @@ def verify_weights(accelerator, model):
         for block_name, block in unwrapped_model.named_modules():
             is_relevant_block = isinstance(block, (CrossAttnDownBlock2D, CrossAttnUpBlock2D, UNetMidBlock2DCrossAttn))
             
-            if is_relevant_block and hasattr(block, 'image_attentions') and hasattr(block, 'sam2_segmentation_attentions'):
-                logger.info(f"Verifying weights for block: {block_name}")
+            if is_relevant_block and hasattr(block, 'image_attentions'):
+                # logger.info(f"Verifying weights for block: {block_name}")
 
                 source_attns = block.image_attentions
-                target_seg_attns = block.sam2_segmentation_attentions
                 
-                num_modules_to_verify = min(len(source_attns), len(target_seg_attns))
+                # List of target attention modules to verify
+                if args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention:
+                    target_attribute_names = ["sam2_image_attentions"]
+                elif (args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) and (args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention):
+                    target_attribute_names = ["sam2_image_attentions", "sam2_segmentation_attentions"]
 
-                for i in range(num_modules_to_verify):
-                    source_transformer = source_attns[i]
-                    target_transformer = target_seg_attns[i]
+                for target_attr_name in target_attribute_names:
+                    if hasattr(block, target_attr_name):
+                        target_attns = getattr(block, target_attr_name)
+                        # logger.info(f"  -> Verifying target modules: '{target_attr_name}'")
 
-                    # Iterate through every parameter in the source and target transformers
-                    # This makes the check robust to any internal changes in Transformer2DModel
-                    source_params = dict(source_transformer.named_parameters())
-                    target_params = dict(target_transformer.named_parameters())
+                        num_modules_to_verify = min(len(source_attns), len(target_attns))
 
-                    for param_name, target_param in target_params.items():
-                        if param_name not in source_params:
-                            logger.error(f"  - FAILED: Parameter '{param_name}' not found in source module. Verification incomplete.")
-                            verification_passed = False
-                            continue
+                        for i in range(num_modules_to_verify):
+                            source_transformer = source_attns[i]
+                            target_transformer = target_attns[i]
+                            full_target_name = f"{target_attr_name}.{i}"
 
-                        source_param = source_params[param_name].detach()
-                        target_param = target_param.detach()
+                            # Iterate through every parameter for a robust check
+                            source_params = dict(source_transformer.named_parameters())
+                            target_params = dict(target_transformer.named_parameters())
 
-                        # Check if slicing is needed (for cross-attention projection layers)
-                        if source_param.shape != target_param.shape:
-                            if target_param.dim() > 1 and source_param.shape[0] == target_param.shape[0]: # Linear weights
-                                slice_dim = target_param.shape[1]
-                                source_slice = source_param[:, :slice_dim]
-                            elif target_param.dim() == 1: # Bias terms
-                                slice_dim = target_param.shape[0]
-                                source_slice = source_param[:slice_dim]
-                            else: # Unhandled case
-                                logger.error(f"  - FAILED: Unhandled shape mismatch for '{param_name}'. "
-                                             f"Source: {source_param.shape}, Target: {target_param.shape}")
-                                verification_passed = False
-                                continue
-                        else: # Shapes match, direct comparison
-                            source_slice = source_param
+                            for param_name, target_param in target_params.items():
+                                if param_name not in source_params:
+                                    logger.error(f"  - FAILED: Parameter '{param_name}' not found in source module for '{full_target_name}'. Verification incomplete.")
+                                    verification_passed = False
+                                    continue
 
-                        # Perform the check
-                        are_equal = torch.allclose(source_slice, target_param, atol=1e-6)
-                        
-                        if are_equal:
-                            logger.info(f"  - PASSED: Verification for '{param_name}' in sam2_segmentation_attentions.{i}")
-                        else:
-                            logger.error(f"  - FAILED: Verification for '{param_name}' in sam2_segmentation_attentions.{i}")
-                            diff = torch.abs(source_slice - target_param).max().item()
-                            logger.error(f"    - Max absolute difference: {diff:.6f}")
-                            verification_passed = False
+                                source_param = source_params[param_name].detach()
+                                target_param = target_param.detach()
+
+                                # Check if slicing is needed (handles different cross-attention dims)
+                                if source_param.shape != target_param.shape:
+                                    if target_param.dim() > 0 and source_param.shape[0] == target_param.shape[0]:
+                                        if target_param.dim() > 1:  # Linear weights
+                                            slice_dim = target_param.shape[1]
+                                            source_slice = source_param[:, :slice_dim]
+                                        else:  # Bias terms
+                                            slice_dim = target_param.shape[0]
+                                            source_slice = source_param[:slice_dim]
+                                    else:  # Unhandled case
+                                        logger.error(f"  - FAILED: Unhandled shape mismatch for '{param_name}' in '{full_target_name}'. "
+                                                     f"Source: {source_param.shape}, Target: {target_param.shape}")
+                                        verification_passed = False
+                                        continue
+                                else:  # Shapes match, direct comparison
+                                    source_slice = source_param
+
+                                # Perform the check
+                                are_equal = torch.allclose(source_slice, target_param, atol=1e-6)
+                                
+                                if not are_equal:
+                                    # logger.info(f"  - PASSED: Verification for '{param_name}' in '{full_target_name}'")
+                                    logger.error(f"  - FAILED: Verification for '{param_name}' in '{full_target_name}'")
+                                    diff = torch.abs(source_slice - target_param).max().item()
+                                    logger.error(f"    - Max absolute difference: {diff:.6f}")
+                                    verification_passed = False
 
     except Exception as e:
         logger.error(f"An exception occurred during weight verification: {e}")
@@ -210,221 +247,221 @@ def image_grid(imgs, rows, cols):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
 
-def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weight_dtype, validation_dataloader, tokenizer, global_step):
+# def log_validation(vae, text_encoder, unet, controlnet, args, accelerator, weight_dtype, validation_dataloader, tokenizer, global_step):
 
-    logger.info("Running validation... ")
-    logger.info("Generating validation image")
-    if args.generate_validation_image:
-        if accelerator.is_main_process:
-            pipeline = StableDiffusionControlNetPipeline(
-                vae=accelerator.unwrap_model(vae),
-                text_encoder=accelerator.unwrap_model(text_encoder),
-                tokenizer=tokenizer,
-                unet=accelerator.unwrap_model(unet),
-                controlnet=accelerator.unwrap_model(controlnet),
-                scheduler=noise_scheduler,
-                safety_checker=None,
-                feature_extractor=None,
-                requires_safety_checker=None
-            )
+#     logger.info("Running validation... ")
+#     logger.info("Generating validation image")
+#     if args.generate_validation_image:
+#         if accelerator.is_main_process:
+#             pipeline = StableDiffusionControlNetPipeline(
+#                 vae=accelerator.unwrap_model(vae),
+#                 text_encoder=accelerator.unwrap_model(text_encoder),
+#                 tokenizer=tokenizer,
+#                 unet=accelerator.unwrap_model(unet),
+#                 controlnet=accelerator.unwrap_model(controlnet),
+#                 scheduler=noise_scheduler,
+#                 safety_checker=None,
+#                 feature_extractor=None,
+#                 requires_safety_checker=None
+#             )
 
-            pipeline = pipeline.to(accelerator.device)
-            pipeline.set_progress_bar_config(disable=True)
+#             pipeline = pipeline.to(accelerator.device)
+#             pipeline.set_progress_bar_config(disable=True)
 
-            ram_model = ram(pretrained='preset/models/ram_swin_large_14m.pth',
-                            pretrained_condition=args.ram_ft_path,
-                            image_size=384,
-                            vit='swin_l')
+#             ram_model = ram(pretrained='preset/models/ram_swin_large_14m.pth',
+#                             pretrained_condition=args.ram_ft_path,
+#                             image_size=384,
+#                             vit='swin_l')
             
-            ram_model.eval()
-            ram_model.to(accelerator.device)
+#             ram_model.eval()
+#             ram_model.to(accelerator.device)
 
-            if args.validation_image and args.validation_prompt:
-                validation_image_path = args.validation_image[0]
-                validation_image = Image.open(validation_image_path).convert("RGB")
+#             if args.validation_image and args.validation_prompt:
+#                 validation_image_path = args.validation_image[0]
+#                 validation_image = Image.open(validation_image_path).convert("RGB")
 
-                lq_for_ram = tensor_transforms(validation_image).unsqueeze(0).to(accelerator.device)
-                lq_for_ram = ram_transforms(lq_for_ram)
-                ram_tags = inference(lq_for_ram, ram_model)
-                ram_encoder_hidden_states = ram_model.generate_image_embeds(lq_for_ram)
+#                 lq_for_ram = tensor_transforms(validation_image).unsqueeze(0).to(accelerator.device)
+#                 lq_for_ram = ram_transforms(lq_for_ram)
+#                 ram_tags = inference(lq_for_ram, ram_model)
+#                 ram_encoder_hidden_states = ram_model.generate_image_embeds(lq_for_ram)
 
-                final_prompt = f"{ram_tags[0]}, "
-                final_prompt += "clean, high-resolution, 8k,"
-                negative_prompt = "dotted, noise, blur, lowres, smooth"
+#                 final_prompt = f"{ram_tags[0]}, "
+#                 final_prompt += "clean, high-resolution, 8k,"
+#                 negative_prompt = "dotted, noise, blur, lowres, smooth"
 
-                width, height = validation_image.size
-                cond_image = validation_image.resize((width*4, height*4))
+#                 width, height = validation_image.size
+#                 cond_image = validation_image.resize((width*4, height*4))
 
-                generator = torch.Generator(device=accelerator.device).manual_seed(args.seed if args.seed else 42)
+#                 generator = torch.Generator(device=accelerator.device).manual_seed(args.seed if args.seed else 42)
 
-                logger.info(f"Generating validation image for step {global_step} with prompt: '{final_prompt}'")
+#                 logger.info(f"Generating validation image for step {global_step} with prompt: '{final_prompt}'")
                 
-                with torch.autocast("cuda"):
-                    generated_image = pipeline(
-                        prompt=final_prompt,
-                        image=cond_image,
-                        negative_prompt=negative_prompt,
-                        num_inference_steps=50,
-                        generator=generator,
-                        height=height*4,
-                        width=width*4,
-                        guidance_scale=5.5,
-                        ram_encoder_hidden_states=ram_encoder_hidden_states,
-                    ).images[0]
+#                 with torch.autocast("cuda"):
+#                     generated_image = pipeline(
+#                         prompt=final_prompt,
+#                         image=cond_image,
+#                         negative_prompt=negative_prompt,
+#                         num_inference_steps=50,
+#                         generator=generator,
+#                         height=height*4,
+#                         width=width*4,
+#                         guidance_scale=5.5,
+#                         ram_encoder_hidden_states=ram_encoder_hidden_states,
+#                     ).images[0]
 
-                # Create a directory for validation samples if it doesn't exist
-                val_img_dir = os.path.join(args.output_dir, "validation_samples")
-                os.makedirs(val_img_dir, exist_ok=True)
+#                 # Create a directory for validation samples if it doesn't exist
+#                 val_img_dir = os.path.join(args.output_dir, "validation_samples")
+#                 os.makedirs(val_img_dir, exist_ok=True)
                 
-                # Save the generated image
-                generated_image.save(os.path.join(val_img_dir, f"step_{global_step}.png"))
-                logger.info(f"Saved validation image to {val_img_dir}/step_{global_step}.png")
+#                 # Save the generated image
+#                 generated_image.save(os.path.join(val_img_dir, f"step_{global_step}.png"))
+#                 logger.info(f"Saved validation image to {val_img_dir}/step_{global_step}.png")
 
-            del pipeline
-            torch.cuda.empty_cache()
+#             del pipeline
+#             torch.cuda.empty_cache()
 
-    logger.info(f"Before validation: {unet.training=}, {controlnet.training=}")
-    val_logs = {}
+#     logger.info(f"Before validation: {unet.training=}, {controlnet.training=}")
+#     val_logs = {}
 
-    try:
+#     try:
 
-        unet.eval()
-        controlnet.eval()
+#         unet.eval()
+#         controlnet.eval()
 
-        logger.info(f"During validation: {unet.training=}, {controlnet.training=}")
+#         logger.info(f"During validation: {unet.training=}, {controlnet.training=}")
 
-        if validation_dataloader is not None:
-            total_val_loss = 0.0
-            total_val_diffusion_loss = 0.0
-            total_val_semantic_loss = 0.0
+#         if validation_dataloader is not None:
+#             total_val_loss = 0.0
+#             total_val_diffusion_loss = 0.0
+#             total_val_semantic_loss = 0.0
 
-            if args.use_lpips_loss:
-                total_val_lpips_loss = 0.0
+#             if args.use_lpips_loss:
+#                 total_val_lpips_loss = 0.0
             
-            for val_batch in tqdm(validation_dataloader, desc="Calculating validation loss", disable=not accelerator.is_local_main_process):
-                with torch.no_grad():
-                    pixel_values = val_batch["pixel_values"].to(accelerator.device, dtype=weight_dtype)
-                    latents = vae.encode(pixel_values).latent_dist.sample()
-                    latents = latents * vae.config.scaling_factor
-                    noise = torch.randn_like(latents)
-                    bsz = latents.shape[0]
-                    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device).long()
-                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+#             for val_batch in tqdm(validation_dataloader, desc="Calculating validation loss", disable=not accelerator.is_local_main_process):
+#                 with torch.no_grad():
+#                     pixel_values = val_batch["pixel_values"].to(accelerator.device, dtype=weight_dtype)
+#                     latents = vae.encode(pixel_values).latent_dist.sample()
+#                     latents = latents * vae.config.scaling_factor
+#                     noise = torch.randn_like(latents)
+#                     bsz = latents.shape[0]
+#                     timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device).long()
+#                     noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-                    encoder_hidden_states = text_encoder(val_batch["input_ids"].to(accelerator.device))[0]
-                    ram_encoder_hidden_states = val_batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
+#                     encoder_hidden_states = text_encoder(val_batch["input_ids"].to(accelerator.device))[0]
+#                     ram_encoder_hidden_states = val_batch["ram_values"].to(accelerator.device, dtype=weight_dtype)
 
-                    controlnet_image = val_batch["conditioning_pixel_values"].to(accelerator.device, dtype=weight_dtype)
+#                     controlnet_image = val_batch["conditioning_pixel_values"].to(accelerator.device, dtype=weight_dtype)
 
-                    sam2_segmentation_encoder_hidden_states = val_batch["sam2_seg_embeds"]
-                    sam2_encoder_hidden_states = val_batch["sam2_img_embeds"]
+#                     sam2_segmentation_encoder_hidden_states = val_batch["sam2_seg_embeds"]
+#                     sam2_encoder_hidden_states = val_batch["sam2_img_embeds"]
                     
-                    if args.use_sam2:
+#                     if args.use_sam2:
                             
-                        down_block_res_samples, mid_block_res_sample = controlnet(
-                            noisy_latents, 
-                            timesteps,
-                            encoder_hidden_states=encoder_hidden_states, 
-                            controlnet_cond=controlnet_image,
-                            return_dict=False, 
-                            image_encoder_hidden_states=ram_encoder_hidden_states,
-                            sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
-                        )
+#                         down_block_res_samples, mid_block_res_sample = controlnet(
+#                             noisy_latents, 
+#                             timesteps,
+#                             encoder_hidden_states=encoder_hidden_states, 
+#                             controlnet_cond=controlnet_image,
+#                             return_dict=False, 
+#                             image_encoder_hidden_states=ram_encoder_hidden_states,
+#                             sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+#                         )
                         
-                        model_pred = unet(
-                            noisy_latents, 
-                            timesteps, 
-                            encoder_hidden_states=encoder_hidden_states,
-                            down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
-                            mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
-                            image_encoder_hidden_states=ram_encoder_hidden_states,
-                            sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
-                        ).sample
+#                         model_pred = unet(
+#                             noisy_latents, 
+#                             timesteps, 
+#                             encoder_hidden_states=encoder_hidden_states,
+#                             down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
+#                             mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
+#                             image_encoder_hidden_states=ram_encoder_hidden_states,
+#                             sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
+#                         ).sample
 
-                    else:
+#                     else:
 
-                        down_block_res_samples, mid_block_res_sample = controlnet(
-                            noisy_latents, 
-                            timesteps, 
-                            encoder_hidden_states=encoder_hidden_states, 
-                            controlnet_cond=controlnet_image,
-                            return_dict=False, 
-                            image_encoder_hidden_states=ram_encoder_hidden_states,
-                        )
+#                         down_block_res_samples, mid_block_res_sample = controlnet(
+#                             noisy_latents, 
+#                             timesteps, 
+#                             encoder_hidden_states=encoder_hidden_states, 
+#                             controlnet_cond=controlnet_image,
+#                             return_dict=False, 
+#                             image_encoder_hidden_states=ram_encoder_hidden_states,
+#                         )
                         
-                        model_pred = unet(
-                            noisy_latents, 
-                            timesteps, 
-                            encoder_hidden_states=encoder_hidden_states,
-                            down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
-                            mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
-                            image_encoder_hidden_states=ram_encoder_hidden_states,
-                        ).sample
+#                         model_pred = unet(
+#                             noisy_latents, 
+#                             timesteps, 
+#                             encoder_hidden_states=encoder_hidden_states,
+#                             down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
+#                             mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
+#                             image_encoder_hidden_states=ram_encoder_hidden_states,
+#                         ).sample
 
-                    if noise_scheduler.config.prediction_type == "epsilon":
-                        target = noise
-                    else:
-                        target = noise_scheduler.get_velocity(latents, noise, timesteps)
+#                     if noise_scheduler.config.prediction_type == "epsilon":
+#                         target = noise
+#                     else:
+#                         target = noise_scheduler.get_velocity(latents, noise, timesteps)
                     
-                    diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-                    # diffusion_loss = F.l1_loss(model_pred.float(), target.float(), reduction="mean")
-                    loss = diffusion_loss
+#                     # diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+#                     diffusion_loss = F.l1_loss(model_pred.float(), target.float(), reduction="mean")
+#                     loss = diffusion_loss
 
-                    if args.use_sam2_loss or args.use_lpips_loss:
-                        alphas_cumprod = noise_scheduler.alphas_cumprod
-                        alpha_bar_t = alphas_cumprod[timesteps]
+#                     if args.use_sam2_loss or args.use_lpips_loss:
+#                         alphas_cumprod = noise_scheduler.alphas_cumprod
+#                         alpha_bar_t = alphas_cumprod[timesteps]
 
-                        while len(alpha_bar_t.shape) < len(noisy_latents.shape):
-                            alpha_bar_t = alpha_bar_t.unsqueeze(-1)
+#                         while len(alpha_bar_t.shape) < len(noisy_latents.shape):
+#                             alpha_bar_t = alpha_bar_t.unsqueeze(-1)
 
-                        pred_original_sample_latents = (noisy_latents - (1 - alpha_bar_t).sqrt() * model_pred) / alpha_bar_t.sqrt()
-                        pred_image_latents_for_vae = pred_original_sample_latents / tiny_vae.config.scaling_factor
-                        pred_image = tiny_vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
-                        sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0
+#                         pred_original_sample_latents = (noisy_latents - (1 - alpha_bar_t).sqrt() * model_pred) / alpha_bar_t.sqrt()
+#                         pred_image_latents_for_vae = pred_original_sample_latents / tiny_vae.config.scaling_factor
+#                         pred_image = tiny_vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
+#                         sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0
                         
-                        if args.use_sam2_loss:
-                            sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
-                            sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
+#                         if args.use_sam2_loss:
+#                             sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
+#                             sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
 
-                            gt_rgb_normalized = (pixel_values.to(torch.float32) + 1.0) / 2.0
-                            gt_sam_input = sam2_norm(gt_rgb_normalized).to(accelerator.device)
-                            gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
+#                             gt_rgb_normalized = (pixel_values.to(torch.float32) + 1.0) / 2.0
+#                             gt_sam_input = sam2_norm(gt_rgb_normalized).to(accelerator.device)
+#                             gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
 
-                            semantic_loss = F.mse_loss(sr_embeds.float(), gt_embeds.float(), reduction="mean")
+#                             semantic_loss = F.mse_loss(sr_embeds.float(), gt_embeds.float(), reduction="mean")
 
-                            total_val_semantic_loss += semantic_loss.item()
-                            loss += args.sam2_loss_weight * semantic_loss
+#                             total_val_semantic_loss += semantic_loss.item()
+#                             loss += args.sam2_loss_weight * semantic_loss
 
-                        if args.use_lpips_loss:
-                            gt_rgb = (pixel_values.to(torch.float32) + 1.0) / 2.0
-                            lpips_loss = lpips_metric(sr_rgb.to(torch.float32), gt_rgb)
-                            total_val_lpips_loss += lpips_loss.item()
-                            loss += args.lpips_loss_weight * lpips_loss
+#                         if args.use_lpips_loss:
+#                             gt_rgb = (pixel_values.to(torch.float32) + 1.0) / 2.0
+#                             lpips_loss = lpips_metric(sr_rgb.to(torch.float32), gt_rgb)
+#                             total_val_lpips_loss += lpips_loss.item()
+#                             loss += args.lpips_loss_weight * lpips_loss
 
-                    total_val_diffusion_loss += diffusion_loss.item()
-                    total_val_loss += loss.item()
+#                     total_val_diffusion_loss += diffusion_loss.item()
+#                     total_val_loss += loss.item()
 
-            avg_val_loss = total_val_loss / len(validation_dataloader)
-            avg_val_diffusion_loss = total_val_diffusion_loss / len(validation_dataloader)
-            val_logs = {"val_loss": avg_val_loss, "val_diffusion_loss": avg_val_diffusion_loss}
+#             avg_val_loss = total_val_loss / len(validation_dataloader)
+#             avg_val_diffusion_loss = total_val_diffusion_loss / len(validation_dataloader)
+#             val_logs = {"val_loss": avg_val_loss, "val_diffusion_loss": avg_val_diffusion_loss}
 
-            if args.use_sam2_loss:
-                avg_val_semantic_loss = total_val_semantic_loss / len(validation_dataloader)
-                val_logs["val_semantic_loss"] = avg_val_semantic_loss
+#             if args.use_sam2_loss:
+#                 avg_val_semantic_loss = total_val_semantic_loss / len(validation_dataloader)
+#                 val_logs["val_semantic_loss"] = avg_val_semantic_loss
             
-            if args.use_lpips_loss:
-                avg_val_lpips_loss = total_val_lpips_loss / len(validation_dataloader)
-                val_logs["val_lpips_loss"] = avg_val_lpips_loss
+#             if args.use_lpips_loss:
+#                 avg_val_lpips_loss = total_val_lpips_loss / len(validation_dataloader)
+#                 val_logs["val_lpips_loss"] = avg_val_lpips_loss
 
-    finally:
-        torch.cuda.empty_cache()
+#     finally:
+#         torch.cuda.empty_cache()
 
-        # Restore original training state of the models
-        unet.train()
-        controlnet.train()
-        logger.info(f"After validation: {unet.training=}, {controlnet.training=}\n")
+#         # Restore original training state of the models
+#         unet.train()
+#         controlnet.train()
+#         logger.info(f"After validation: {unet.training=}, {controlnet.training=}\n")
 
-    return val_logs
+#     return val_logs
 
 def import_model_class_from_model_name_or_path(pretrained_model_name_or_path: str, revision: str):
     text_encoder_config = PretrainedConfig.from_pretrained(
@@ -906,14 +943,24 @@ def parse_args(input_args=None):
         help="Set this flag to make the unet image attention modules trainable."
     )
     parser.add_argument(
-        "--train_controlnet_sam2_attention",
+        "--train_controlnet_sam2_embeds_attention",
         action="store_true",
-        help="Set this flag to make the controlnet sam2 attention modules trainable."
+        help="Set this flag to make the controlnet sam2 emebds attention module trainable."
     )
     parser.add_argument(
-        "--train_unet_sam2_attention",
+        "--train_controlnet_sam2_segmentation_attention",
         action="store_true",
-        help="Set this flag to make the unet sam2 attention modules trainable."
+        help="Set this flag to make the controlnet sam2 segmentation attention module trainable."
+    )
+    parser.add_argument(
+        "--train_unet_sam2_embeds_attention",
+        action="store_true",
+        help="Set this flag to make the unet sam2 emebds attention module trainable."
+    )
+    parser.add_argument(
+        "--train_unet_sam2_segmentation_attention",
+        action="store_true",
+        help="Set this flag to make the unet sam2 segmentation attention module trainable."
     )
     parser.add_argument(
         "--train_controlnet_fusion_conv",
@@ -1124,7 +1171,6 @@ if args.unet_model_name_or_path:
     logger.info("Loading unet weights from self-train")
 
     unet = UNet2DConditionModel.from_pretrained_orig(
-        args.pretrained_model_name_or_path, 
         args.unet_model_name_or_path, 
         subfolder="unet", 
         revision=args.revision, 
@@ -1243,37 +1289,11 @@ if args.train_controlnet_dape_attention:
             print(f'  - {name}')
             trainable_module_found = True
 
-if args.train_unet_tag_attention:
-    trainable_module_found = False
-
-    for name, module in unet.named_modules():
-        if name.endswith("attentions") and "image" not in name and "sam2" not in name:
-            for params in module.parameters():
-                params.requires_grad = True
-
-            if not trainable_module_found:
-                print("Found trainable modules in UNet:")   
-            print(f'  - {name}')
-            trainable_module_found = True
-
-if args.train_unet_dape_attention:
-    trainable_module_found = False
-
-    for name, module in unet.named_modules():
-        if name.endswith("image_attentions") and "sam2" not in name:
-            for params in module.parameters():
-                params.requires_grad = True
-
-            if not trainable_module_found:
-                print("Found trainable modules in UNet:")
-            print(f'  - {name}')
-            trainable_module_found = True
-
-if args.train_controlnet_sam2_attention:
+if args.train_controlnet_sam2_embeds_attention:
     trainable_module_found = False
 
     for name, module in controlnet.named_modules():
-        if name.endswith("sam2_image_attentions") or name.endswith("sam2_segmentation_attentions"):
+        if name.endswith("sam2_image_attentions"):
             for params in module.parameters():
                 params.requires_grad = True
 
@@ -1281,17 +1301,17 @@ if args.train_controlnet_sam2_attention:
                 print("Found trainable modules in ControlNet:")
             print(f'  - {name}')
             trainable_module_found = True
-            
-if args.train_unet_sam2_attention:
+
+if args.train_controlnet_sam2_segmentation_attention:
     trainable_module_found = False
 
-    for name, module in unet.named_modules():
-        if name.endswith("sam2_image_attentions") or name.endswith("sam2_segmentation_attentions"):
+    for name, module in controlnet.named_modules():
+        if name.endswith("sam2_segmentation_attentions"):
             for params in module.parameters():
                 params.requires_grad = True
 
             if not trainable_module_found:
-                print("Found trainable modules in UNet:")
+                print("Found trainable modules in ControlNet:")
             print(f'  - {name}')
             trainable_module_found = True
 
@@ -1318,6 +1338,58 @@ if args.train_controlnet_double_fusion_conv:
 
             if not trainable_module_found:
                 print("Found trainable modules in ControlNet:")
+            print(f'  - {name}')
+            trainable_module_found = True
+
+if args.train_unet_tag_attention:
+    trainable_module_found = False
+
+    for name, module in unet.named_modules():
+        if name.endswith("attentions") and "image" not in name and "sam2" not in name:
+            for params in module.parameters():
+                params.requires_grad = True
+
+            if not trainable_module_found:
+                print("Found trainable modules in UNet:")   
+            print(f'  - {name}')
+            trainable_module_found = True
+
+if args.train_unet_dape_attention:
+    trainable_module_found = False
+
+    for name, module in unet.named_modules():
+        if name.endswith("image_attentions") and "sam2" not in name:
+            for params in module.parameters():
+                params.requires_grad = True
+
+            if not trainable_module_found:
+                print("Found trainable modules in UNet:")
+            print(f'  - {name}')
+            trainable_module_found = True
+
+if args.train_controlnet_sam2_embeds_attention:
+    trainable_module_found = False
+
+    for name, module in controlnet.named_modules():
+        if name.endswith("sam2_image_attentions"):
+            for params in module.parameters():
+                params.requires_grad = True
+
+            if not trainable_module_found:
+                print("Found trainable modules in UNet:")
+            print(f'  - {name}')
+            trainable_module_found = True
+
+if args.train_controlnet_sam2_segmentation_attention:
+    trainable_module_found = False
+
+    for name, module in controlnet.named_modules():
+        if name.endswith("sam2_segmentation_attentions"):
+            for params in module.parameters():
+                params.requires_grad = True
+
+            if not trainable_module_found:
+                print("Found trainable modules in UNet:")
             print(f'  - {name}')
             trainable_module_found = True
 
@@ -1434,7 +1506,13 @@ print(f'start to load optimizer...')
 
 new_module_params = []
 base_model_params = []
-new_module_keywords = ["fusion_conv", "sam2_segmentation_attentions"]
+
+if args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention:
+    new_module_keywords = ["fusion_conv", "sam2_image_attentions"]
+elif (args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) and (args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention):
+    new_module_keywords = ["fusion_conv", "sam2_image_attentions", "sam2_segmentation_attentions"]
+else:
+    new_module_keywords = ["fusion_conv"]
 
 params_to_optimize_full_list = list(controlnet.named_parameters()) + list(unet.named_parameters())
 
@@ -1532,12 +1610,12 @@ else:
         controlnet, unet, optimizer, train_dataloader, lr_scheduler
     )
 
-if args.use_sam2:
-    copy_dape_to_sam2_weights(unet, accelerator)
-    copy_dape_to_sam2_weights(controlnet, accelerator)
+if (args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) or ((args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) and (args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention)):
+    copy_dape_to_sam2_weights(args, controlnet, accelerator)
+    copy_dape_to_sam2_weights(args, unet, accelerator)
 
-    verify_weights(accelerator, controlnet)
-    verify_weights(accelerator, unet)
+    verify_weights(args, accelerator, controlnet)
+    verify_weights(args, accelerator, unet)
 
 # For mixed precision training we cast the text_encoder and vae weights to half-precision
 # as these models are only used for inference, keeping weights in full precision is not required.
@@ -1672,7 +1750,8 @@ for epoch in range(first_epoch, args.num_train_epochs):
                     controlnet_cond=controlnet_image,
                     return_dict=False,
                     image_encoder_hidden_states=ram_encoder_hidden_states,
-                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                    # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                 )
 
                 # UNet
@@ -1686,7 +1765,8 @@ for epoch in range(first_epoch, args.num_train_epochs):
                     ],
                     mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
                     image_encoder_hidden_states=ram_encoder_hidden_states,
-                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states
+                    # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                    sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                 ).sample
 
             else:
