@@ -259,8 +259,8 @@ def main(args, enable_xformers_memory_efficient_attention=True,):
                             validation_prompt, validation_image, num_inference_steps=args.num_inference_steps, generator=generator, height=height, width=width,
                             guidance_scale=args.guidance_scale, negative_prompt=negative_prompt, conditioning_scale=args.conditioning_scale,
                             start_point=args.start_point, ram_encoder_hidden_states=ram_encoder_hidden_states,
-                            # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
-                            sam2_encoder_hidden_states=sam2_encoder_hidden_states,
+                            sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                            # sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                             latent_tiled_size=args.latent_tiled_size, latent_tiled_overlap=args.latent_tiled_overlap,
                             args=args,
                         ).images[0]

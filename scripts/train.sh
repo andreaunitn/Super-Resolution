@@ -2,9 +2,9 @@
 
 # Paths
 PRETRAINED_MODEL_PATH="preset/models/stable-diffusion-2-base"
-SEESR_MODEL_PATH="preset/train_output/LSDIR/Intermediate_1_long_training_sam2_img_embeds_ffhq/checkpoint-20000"
+SEESR_MODEL_PATH="preset/train_output/LSDIR/Intermediate_1_long_training_all_sam2_sam2loss_ffhq/checkpoint-20000"
 TINY_VAE_PATH="preset/models/tiny_vae"
-OUTPUT_DIR="preset/train_output/LSDIR"
+OUTPUT_DIR="preset/train_output/LSDIR/"
 ROOT_FOLDERS="preset/datasets/train_datasets/LSDIR"
 RAM_FT_PATH="preset/models/DAPE.pth"
 VALIDATION_PATH="preset/datasets/test_datasets/RealSR/test_LR/Canon_004_LR4.png"
@@ -20,7 +20,7 @@ NULL_TEXT_RATIO=0.5
 RESOLUTION=512
 DATALOADER_WORKERS=0
 CUDA_DEVICES="0"
-SAM_LOSS_WEIGHT=1.0
+SAM2_LOSS_WEIGHT=0.1
 LPIPS_LOSS_WEIGHT=0.1
 LR_WARMUP_STEPS=500
 LR_SCHEDULER="constant_with_warmup"
@@ -69,14 +69,16 @@ do
       --validation_prompt="$VALIDATION_PROMPT" \
       --generate_validation_image \
       --train_controlnet_fusion_conv \
+      --train_controlnet_sam2_segmentation_attention \
       --train_controlnet_sam2_embeds_attention \
       --train_controlnet_dape_attention \
       --train_unet_fusion_conv \
+      --train_unet_sam2_segmentation_attention \
       --train_unet_sam2_embeds_attention \
       --train_unet_dape_attention \
+      --use_sam2_loss \
+      --sam2_loss_weight=$SAM2_LOSS_WEIGHT \
       --use_sam2 \
-      --use_lpips_loss \
-      --lpips_loss_weight=$LPIPS_LOSS_WEIGHT \
 
     EXIT_CODE=$?
     if [ $EXIT_CODE -eq 0 ]; then

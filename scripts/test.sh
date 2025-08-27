@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # datasets=("DIV2K" "DRealSR" "RealLR200" "RealSR")
-datasets=("RealSR")
+# datasets=("RealSR")
+datasets=("RealLR200")
 
 GENERATION_SCRIPT="test_seesr.py"
 METRIC_SCRIPT="utils_data/metrics.py"
@@ -10,7 +11,7 @@ SKIP_GENERATION=false
 # Paths
 PRETRAINED_MODEL_PATH="preset/models/stable-diffusion-2-base"
 RAM_FT_PATH="preset/models/DAPE.pth"
-CHECKPOINT_BASE_DIR="preset/train_output/LSDIR"
+CHECKPOINT_BASE_DIR="preset/train_output/LSDIR/Final_long_training_sam2_seg_embeds_ffhq"
 
 # Directories
 BASE_TEST_DATA_DIR="preset/datasets/test_datasets"

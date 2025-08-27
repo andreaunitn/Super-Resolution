@@ -122,6 +122,8 @@ def copy_dape_to_sam2_weights(args, model, accelerator):
             # List of target attention modules to initialize
             if args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention:
                 target_attribute_names = ["sam2_image_attentions"]
+            elif args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention:
+                target_attribute_names = ["sam2_segmentation_attentions"]
             elif (args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) and (args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention):
                 target_attribute_names = ["sam2_image_attentions", "sam2_segmentation_attentions"]
 
@@ -169,6 +171,8 @@ def verify_weights(args, accelerator, model):
                 # List of target attention modules to verify
                 if args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention:
                     target_attribute_names = ["sam2_image_attentions"]
+                elif args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention:
+                    target_attribute_names = ["sam2_segmentation_attentions"]
                 elif (args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) and (args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention):
                     target_attribute_names = ["sam2_image_attentions", "sam2_segmentation_attentions"]
 
@@ -1158,7 +1162,7 @@ tiny_vae.enable_slicing()
 
 # SAM 2.1
 if args.use_sam2 or args.use_sam2_loss:
-    sam2 = load(apply_postprocessing=False, stability_score_thresh=0.9)
+    sam2 = load(apply_postprocessing=False, stability_score_thresh=0.9, model_size="large")
     sam2_image_encoder = sam2.predictor.model.image_encoder
     sam2_norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
@@ -1478,29 +1482,6 @@ else:
     optimizer_class = torch.optim.AdamW
 
 # Optimizer creation
-# print(f'================= Optimize ControlNet and Unet ======================')
-
-# total_individual_params = sum(p.numel() for p in (list(controlnet.parameters()) + list(unet.parameters())))
-# params_to_optimize = [p for p in controlnet.parameters() if p.requires_grad] + [p for p in unet.parameters() if p.requires_grad]
-# trainable_tensors = len(params_to_optimize)
-# trainable_individual_params = sum(p.numel() for p in params_to_optimize)
-
-# print(f"Total Individual Parameters: {total_individual_params:,}")
-# print(f"Trainable (ControlNet + UNet) Parameters: {trainable_individual_params:,}\n")
-
-# print(f'start to load optimizer...')
-
-# # TODO: cambia optimizer e usa SGD
-# # lr non cambiare
-# optimizer = optimizer_class(
-#     params_to_optimize,
-#     lr=args.learning_rate,
-#     betas=(args.adam_beta1, args.adam_beta2),
-#     weight_decay=args.adam_weight_decay,
-#     eps=args.adam_epsilon,
-# )
-
-# Optimizer creation
 print(f'================= Optimize ControlNet and Unet ======================')
 print(f'start to load optimizer...')
 
@@ -1509,6 +1490,8 @@ base_model_params = []
 
 if args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention:
     new_module_keywords = ["fusion_conv", "sam2_image_attentions"]
+elif args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention:
+    new_module_keywords = ["fusion_conv", "sam2_segmentation_attentions"]
 elif (args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) and (args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention):
     new_module_keywords = ["fusion_conv", "sam2_image_attentions", "sam2_segmentation_attentions"]
 else:
@@ -1610,7 +1593,7 @@ else:
         controlnet, unet, optimizer, train_dataloader, lr_scheduler
     )
 
-if (args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) or ((args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) and (args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention)):
+if (args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) or (args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention) or ((args.train_controlnet_sam2_embeds_attention and args.train_unet_sam2_embeds_attention) and (args.train_controlnet_sam2_segmentation_attention and args.train_unet_sam2_segmentation_attention)):
     copy_dape_to_sam2_weights(args, controlnet, accelerator)
     copy_dape_to_sam2_weights(args, unet, accelerator)
 
@@ -1750,7 +1733,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
                     controlnet_cond=controlnet_image,
                     return_dict=False,
                     image_encoder_hidden_states=ram_encoder_hidden_states,
-                    # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                     sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                 )
 
@@ -1765,7 +1748,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
                     ],
                     mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
                     image_encoder_hidden_states=ram_encoder_hidden_states,
-                    # sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
+                    sam2_segmentation_encoder_hidden_states=sam2_segmentation_encoder_hidden_states,
                     sam2_encoder_hidden_states=sam2_encoder_hidden_states,
                 ).sample
 
@@ -1831,27 +1814,39 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 # Predict x0 from xt and epsilon
                 pred_original_sample_latents = (noisy_latents - (1 - alpha_bar_t).sqrt() * model_pred) / alpha_bar_t.sqrt()
                 
-                # Now, decode the predicted original sample as before
-                pred_image_latents_for_vae = pred_original_sample_latents / tiny_vae.config.scaling_factor
-                pred_image = tiny_vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
-                sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0
+                with torch.no_grad():
+                    latents_for_decode = pred_original_sample_latents
+
+                    # Now, decode the predicted original sample as before
+                    pred_image_latents_for_vae = latents_for_decode / vae.config.scaling_factor
+                    pred_image = vae.decode(pred_image_latents_for_vae.to(weight_dtype)).sample
+                    sr_rgb = (pred_image.clamp(-1,1) + 1.0) / 2.0
+
+                sr_rgb_with_grad = sr_rgb.detach() + (pred_original_sample_latents - pred_original_sample_latents.detach()).sum() * 0
 
                 ######################################################################################################
                 # --- COMPUTATIONAL GRAPH DEBUG CHECK 2 ---
                 if step == 1:
-                    print("\n--- sr_rgb.grad_fn Check: Step 2 ---")
-                    print(f"    sr_rgb.grad_fn: {sr_rgb.grad_fn}")
+                    print("\n--- sr_rgb_with_grad.grad_fn Check: Step 2 ---")
+                    print(f"    sr_rgb_with_grad.grad_fn: {sr_rgb_with_grad.grad_fn}")
 
-                    if sr_rgb.grad_fn is None:
-                        print("    CRITICAL: Graph broken during sr_rgb derivation! Check VAE decode or math.")
+                    if sr_rgb_with_grad.grad_fn is None:
+                        print("    CRITICAL: Graph broken during sr_rgb_with_grad derivation! Check VAE decode or math.")
+
+                    print("\n--- pred_original_sample_latents.grad_fn Check: Step 2.1 ---")
+                    print(f"    pred_original_sample_latents.grad_fn: {pred_original_sample_latents.grad_fn}")
+
+                    if pred_original_sample_latents.grad_fn is None:
+                        print("    CRITICAL: Graph broken during pred_original_sample_latents derivation! Check VAE decode or math.")
 
                 ######################################################################################################
 
                 if args.use_sam2_loss:
-                    sr_sam_input = sam2_norm(sr_rgb).to(accelerator.device)
+                    sr_sam_input = sam2_norm(sr_rgb_with_grad).to(accelerator.device)
                     sr_embeds = sam2_image_encoder(sr_sam_input)["vision_features"]
 
                     with torch.no_grad():
+                        gt_rgb = (pixel_values.to(torch.float32) + 1.0) / 2.0
                         gt_sam_input = sam2_norm(pixel_values).to(accelerator.device)
                         gt_embeds = sam2_image_encoder(gt_sam_input)["vision_features"]
 
@@ -1861,7 +1856,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
                     # --- COMPUTATIONAL GRAPH DEBUG CHECK 3 ---
                     if step == 1:
                         print("\n--- Semantic Loss grad_fn Check: Step 3 ---")
-                        print(f"    sr_rgb.grad_fn: {sr_rgb.grad_fn}")
+                        print(f"    sr_rgb_with_grad.grad_fn: {sr_rgb_with_grad.grad_fn}")
                         print(f"    sr_sam_input.grad_fn: {sr_sam_input.grad_fn}")
                         print(f"    sr_embeds.grad_fn: {sr_embeds.grad_fn}")
                         print(f"    semantic_loss.grad_fn: {semantic_loss.grad_fn}")
@@ -1871,7 +1866,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
                     ######################################################################################################
                 if args.use_lpips_loss:
                     gt_rgb = (pixel_values.to(torch.float32) + 1.0) / 2.0
-                    lpips_loss = lpips_metric(sr_rgb.to(torch.float32), gt_rgb)
+                    lpips_loss = lpips_metric(sr_rgb_with_grad.to(torch.float32), gt_rgb)
 
             diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
             # diffusion_loss = F.l1_loss(model_pred.float(), target.float(), reduction="mean")
@@ -1951,7 +1946,7 @@ for epoch in range(first_epoch, args.num_train_epochs):
                 #     validation_loss = val_logs["val_loss"]
 
         if args.use_sam2_loss:
-            logs = {"loss/train": loss.detach().item(), "loss/train_diffusion": diffusion_loss.detach().item(), "loss/train_semantic": semantic_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss/train": loss.detach().item(), "loss/train_diffusion": diffusion_loss.detach().item(), "loss/train_semantic": semantic_loss.detach().item() * args.sam2_loss_weight, "lr": lr_scheduler.get_last_lr()[0]}
 
             if validation_loss is not None:
                 logger.info(f"validation_loss: {validation_loss:.4f}")
