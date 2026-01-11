@@ -7,7 +7,7 @@
 
 **SamSR** is an advanced image super-resolution diffusion framework that leverages the powerful semantic capabilities of **Segment Anything Model 2 (SAM 2)**. Building upon the foundation of [SeeSR](https://github.com/cswry/SeeSR), this project introduces novel architectural improvements and optimization strategies to enhance generation quality and efficiency.
 
-## Architecture Overview
+## 🧩 Architecture Overview
 
 
 ## 🔎 Key Innovations
@@ -98,7 +98,6 @@ your_training_datasets/
 ```
 
 ## 📜 Credits & Acknowledgments
-
 This project is built upon the excellent research of **SeeSR** and **SAM 2**.
 
 * **Original Codebase**: [SeeSR (CVPR 2024)](https://github.com/cswry/SeeSR).
