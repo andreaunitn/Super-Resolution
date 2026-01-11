@@ -98,6 +98,7 @@ your_training_datasets/
 ```
 
 ## 📜 Credits & Acknowledgments
+
 This project is built upon the excellent research of **SeeSR** and **SAM 2**.
 
 * **Original Codebase**: [SeeSR (CVPR 2024)](https://github.com/cswry/SeeSR).
