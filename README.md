@@ -115,5 +115,11 @@ The following is BibTeX reference:
   year={2024}
 }
 ```
+## 👨‍💻 Maintainers
+* **Andrea** (me) - [GitHub Profile](https://github.com/andreaunitn).
+
+For any question regarding the SamSR implementation, parallelization details or the new loss functions, please open an issue in this repository or contact me at andrea.tomasoni2000@gmail.com.
+
 ## 🎫 License
 This project and related weights are released under the [Apache 2.0 license](LICENSE).
+
