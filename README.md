@@ -1,5 +1,5 @@
 <div align=center class="logo">
-      <img src="figs/samsr.jpg" style="width:640px">
+      <img src="figs/samsr.png" style="width:640px">
    </a>
 </div>
 
@@ -8,7 +8,7 @@
 **SamSR** is an advanced image super-resolution diffusion framework that leverages the powerful semantic capabilities of **Segment Anything Model 2 (SAM 2)**. Building upon the foundation of [SeeSR](https://github.com/cswry/SeeSR), this project introduces novel architectural improvements and optimization strategies to enhance generation quality and efficiency.
 
 ## 🧩 Architecture Overview
-![samsr](figs/samsr_arch.png)
+![samsr](figs/samsr_arch.jpg)
 
 ## 🔎 Key Innovations
 
