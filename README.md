@@ -104,7 +104,7 @@ This project is built upon the excellent research of **SeeSR** and **SAM 2**.
 * **Segment Anything Model 2**: [Meta AI SAM 2](https://github.com/facebookresearch/sam2).
 
 If you find this code useful, please consider citing the original works:
-The following is BibTeX reference:
+The following are BibTeX references:
 
 ```
 @inproceedings{wu2024seesr,
