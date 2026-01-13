@@ -115,6 +115,15 @@ The following is BibTeX reference:
   year={2024}
 }
 ```
+```
+@article{ravi2024sam,
+  title={Sam 2: Segment anything in images and videos},
+  author={Ravi, Nikhila and Gabeur, Valentin and Hu, Yuan-Ting and Hu, Ronghang and Ryali, Chaitanya and Ma, Tengyu and Khedr, Haitham and R{\"a}dle, Roman and Rolland, Chloe and Gustafson, Laura and others},
+  journal={arXiv preprint arXiv:2408.00714},
+  year={2024}
+}
+```
+
 ## 👨‍💻 Maintainers
 * **Andrea** (me) - [GitHub Profile](https://github.com/andreaunitn).
 
